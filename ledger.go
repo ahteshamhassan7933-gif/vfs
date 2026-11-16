@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/hanzoai/vfs/journal"
 )
@@ -75,6 +76,41 @@ func (l *ledger) seal(plain []byte) ([]byte, error) {
 		return nil, err
 	}
 	return l.aead.Seal(out, out, plain, l.aad), nil
+}
+
+// sealChange seals a change into a buffer taken from the pool: the nonce, then the change
+// encoded where it will be encrypted, in place, then the tag. The caller gives the buffer
+// back (release) once the journal has copied it.
+func (l *ledger) sealChange(c *change) ([]byte, error) {
+	n := l.aead.NonceSize()
+	buf := takeBuffer(n + 64 + len(c.data) + l.aead.Overhead())
+	buf = buf[:n]
+	if _, err := rand.Read(buf); err != nil {
+		giveBuffer(buf)
+		return nil, err
+	}
+	nonce := buf[:n:n]
+	buf = c.encodeTo(buf)
+	plain := buf[n:]
+	return l.aead.Seal(buf[:n], nonce, plain, l.aad), nil
+}
+
+// Sealed records are the size of a write and are made at the rate of writes: they are
+// kept for the next one.
+var buffers sync.Pool
+
+func takeBuffer(n int) []byte {
+	if b, ok := buffers.Get().(*[]byte); ok && cap(*b) >= n {
+		return (*b)[:0]
+	}
+	return make([]byte, 0, max(n, 256<<10))
+}
+
+func giveBuffer(b []byte) {
+	if cap(b) >= 64<<10 && cap(b) <= 8<<20 {
+		b = b[:0]
+		buffers.Put(&b)
+	}
 }
 
 func (l *ledger) open(sealed []byte) ([]byte, error) {

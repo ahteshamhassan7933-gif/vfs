@@ -486,13 +486,16 @@ func (v *Volume) mutate(ctx context.Context, build func(context.Context) (*chang
 			return 0, err
 		}
 		seq, err := v.append(ctx, c)
+		logged := int64(len(c.sealed))
+		giveBuffer(c.sealed) // the journal has copied it, or does not take the change
+		c.sealed = nil
 		if err != nil {
 			v.wmu.Unlock()
 			return 0, err
 		}
 		v.mu.Lock()
 		v.apply(c, seq)
-		v.logged += int64(len(c.sealed))
+		v.logged += logged
 		early := v.gen == nil && v.pressure()
 		v.mu.Unlock()
 		v.wmu.Unlock()
@@ -508,7 +511,7 @@ func (v *Volume) sealChange(c *change) ([]byte, error) {
 	if v.led == nil {
 		return nil, ErrReadOnly
 	}
-	return v.led.seal(c.encode())
+	return v.led.sealChange(c)
 }
 
 // append puts the change in the journal, sealed. wmu is held, which is what makes the
@@ -520,8 +523,8 @@ func (v *Volume) append(ctx context.Context, c *change) (uint64, error) {
 		if sealed, err = v.sealChange(c); err != nil {
 			return 0, err
 		}
+		c.sealed = sealed
 	}
-	c.sealed = sealed
 	seq, err := v.led.j.Append(ctx, sealed)
 	if err != nil {
 		if st := v.led.j.State(); st.Err != nil {

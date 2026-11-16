@@ -48,9 +48,11 @@ const (
 // operation builds.
 const maxChanges = 1 << 20
 
-func (c *change) encode() []byte {
-	var w writer
-	w.b = make([]byte, 0, 64+len(c.data))
+func (c *change) encode() []byte { return c.encodeTo(make([]byte, 0, 64+len(c.data))) }
+
+// encodeTo appends the change to b.
+func (c *change) encodeTo(b []byte) []byte {
+	w := writer{b: b}
 	w.b = append(w.b, byte(c.kind))
 	switch c.kind {
 	case changeWrite:

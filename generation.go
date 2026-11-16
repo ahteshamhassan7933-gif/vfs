@@ -80,7 +80,6 @@ func (v *Volume) cut() *generation {
 		f.lv = layer{limit: f.size}
 		f.changed = false
 	}
-	sort.Slice(g.snaps, func(i, j int) bool { return g.snaps[i].ino < g.snaps[j].ino })
 	v.dirtyFiles = map[InodeID]*fileState{}
 	v.gen = g
 	return g
@@ -101,6 +100,7 @@ func (g *generation) run(ctx context.Context) error {
 	v := g.v
 	up := newUploader(ctx, v.be, v.cfg.Streams)
 	if !g.settled {
+		sort.Slice(g.snaps, func(i, j int) bool { return g.snaps[i].ino < g.snaps[j].ino })
 		g.reset()
 		if err := g.settle(ctx, up); err != nil {
 			up.wait()
