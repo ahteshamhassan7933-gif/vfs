@@ -171,6 +171,7 @@ type Volume struct {
 	fenced     bool
 	failed     error
 	closed     bool
+	reclaiming bool // a publication has finished and its journal space is being given back
 
 	led      *ledger
 	recovery Recovery
@@ -486,6 +487,23 @@ func (v *Volume) mutate(ctx context.Context, build func(context.Context) (*chang
 			return 0, err
 		}
 		seq, err := v.append(ctx, c)
+		for errors.Is(err, journal.ErrFull) && v.draining() {
+			// The journal is full of changes a publication is taking: the writer is slowed to
+			// the speed of the drain, not refused, until the drain stops making progress.
+			wait := v.waitDrained()
+			select {
+			case <-wait:
+			case <-ctx.Done():
+				err = ctx.Err()
+			case <-v.base.Done():
+				err = ErrClosed
+			}
+			if err == nil || errors.Is(err, journal.ErrFull) {
+				seq, err = v.append(ctx, c)
+			} else {
+				break
+			}
+		}
 		logged := int64(len(c.sealed))
 		giveBuffer(c.sealed) // the journal has copied it, or does not take the change
 		c.sealed = nil
@@ -620,6 +638,25 @@ func (v *Volume) admit(ctx context.Context) error {
 			return ErrClosed
 		}
 	}
+}
+
+// draining reports whether a publication that is not failing is, or soon will be, freeing
+// the journal: a change that finds the journal full waits for it. A journal full of changes
+// that nothing is publishing, or whose publication fails, refuses the change.
+func (v *Volume) draining() bool {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.pubErr == nil && (v.gen != nil || v.reclaiming || v.applied > v.head.Journal)
+}
+
+// waitDrained wakes the publisher and returns the channel closed by the next publication
+// that frees journal space, or fails.
+func (v *Volume) waitDrained() <-chan struct{} {
+	v.mu.RLock()
+	ch := v.freed
+	v.mu.RUnlock()
+	v.wake()
+	return ch
 }
 
 // pressure reports whether enough is waiting for the store to be worth publishing before

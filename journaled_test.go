@@ -162,6 +162,9 @@ func TestFsyncAsksTheStoreForNothing(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if st := v.State(); st.Durable < st.Visible {
+		t.Fatalf("after the handle's fsync the journal is durable to %d of %d", st.Durable, st.Visible)
+	}
 	buf := make([]byte, len(data))
 	if _, err := f.ReadAt(ctx, buf, 0); err != nil && err.Error() != "EOF" {
 		t.Fatal(err)
@@ -636,4 +639,116 @@ func TestMemoryBoundWaitsThenRefuses(t *testing.T) {
 		t.Fatalf("a write with memory full and the store down = %v, want ErrFull", failure)
 	}
 	down.Store(false)
+}
+
+// While a generation is being published, what it holds is read, listed and measured as before,
+// and writes made since are seen over it: the three levels of a file's content (settled, frozen
+// for the generation, written since) read as one.
+func TestReadsSeeAGenerationInFlight(t *testing.T) {
+	st := &stall{on: func(string) bool { return false }, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	mem, c, v, _ := pair(t, func(b backend.Backend) backend.Backend { st.Backend = b; return st }, nil)
+	base := content(1, 300_000)
+	in := write(t, v, vfs.RootInode, "f", base)
+	flush(t, v) // settled
+	f, err := v.Open(ctx, in.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	model := append([]byte(nil), base...)
+	put := func(p []byte, off int) {
+		t.Helper()
+		if _, err := f.WriteAt(ctx, p, int64(off)); err != nil {
+			t.Fatal(err)
+		}
+		if off+len(p) > len(model) {
+			model = append(model, make([]byte, off+len(p)-len(model))...)
+		}
+		copy(model[off:], p)
+	}
+	put(content(2, 50_000), 100_000) // frozen when the generation is cut
+	put([]byte("tail"), 400_000)     // extends the file, past a hole
+	st.on = func(k string) bool { return k == "head" }
+	done := make(chan error, 1)
+	go func() { done <- v.Flush(ctx) }()
+	<-st.entered // the generation is cut and held at the Head
+	check := func(what string) {
+		t.Helper()
+		got, err := v.Stat(ctx, in.ID)
+		if err != nil || got.Size != uint64(len(model)) {
+			t.Fatalf("%s: size %d, %v; want %d", what, got.Size, err, len(model))
+		}
+		mustEqual(t, what, readAll(t, v, in.ID), model)
+	}
+	check("frozen over settled")
+	put(content(3, 1000), 120_000) // over the frozen layer, in the live one
+	put([]byte("x"), 10)
+	check("live over frozen")
+	if err := f.Truncate(ctx, 130_000); err != nil {
+		t.Fatal(err)
+	}
+	model = model[:130_000]
+	check("truncated below the frozen layer's end")
+	put([]byte("end"), 135_000) // extended again: the gap is zeros, not the frozen bytes
+	check("extended over the truncation")
+	st.on = func(string) bool { return false }
+	close(st.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	check("after the generation was published")
+	flush(t, v)
+	mustEqual(t, "in the store", readAll(t, reopen(t, mem, c), in.ID), model)
+}
+
+// The journal is told the store has a sequence only after the Head carrying it committed.
+func TestJournalIsToldAfterTheHead(t *testing.T) {
+	var refuse atomic.Bool
+	_, _, v, _ := pair(t, func(b backend.Backend) backend.Backend {
+		return &storetest.Hook{Backend: b, Before: func(op, key string) error {
+			if refuse.Load() && key == "head" {
+				return errors.New("the store refuses the Head")
+			}
+			return nil
+		}}
+	}, nil)
+	write(t, v, vfs.RootInode, "a", []byte("a"))
+	refuse.Store(true)
+	if err := v.Flush(ctx); err == nil {
+		t.Fatal("Flush succeeded with the Head refused")
+	}
+	if st := v.State(); st.Published != 0 || st.Publishing == nil || !st.Degraded {
+		t.Fatalf("state after a refused Head: %+v", st)
+	}
+	refuse.Store(false)
+	flush(t, v)
+	if st := v.State(); st.Published != st.Visible || st.Publishing != nil {
+		t.Fatalf("state after the Head: %+v", st)
+	}
+}
+
+// A journal much smaller than what is written does not fill while the store answers: the
+// Volume publishes when a quarter of the journal is taken, and the writer is not refused.
+func TestJournalFillPublishesEarly(t *testing.T) {
+	mem, c, v, _ := pair(t, nil, func(c *vfs.Config) { c.Capacity = 8 << 20 })
+	in, err := v.Create(ctx, vfs.RootInode, "big", 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := v.Open(ctx, in.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	block := content(4, 256<<10)
+	const n = 160 // 40 MiB through an 8 MiB journal
+	for i := range n {
+		if _, err := f.WriteAt(ctx, block, int64(i*len(block))); err != nil {
+			t.Fatalf("write %d: %v (state %+v, stats %+v)", i, err, v.State(), v.Stats())
+		}
+	}
+	flush(t, v)
+	if got := readAll(t, reopen(t, mem, c), in.ID); len(got) != n*len(block) {
+		t.Fatalf("the store has %d bytes, want %d", len(got), n*len(block))
+	}
 }

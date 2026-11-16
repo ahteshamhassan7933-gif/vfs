@@ -505,10 +505,16 @@ func (g *generation) complete() error {
 		}
 	}
 	v.dirty -= g.bytes
-	v.gen = nil
+	v.gen, v.reclaiming = nil, true
 	v.pubErr = nil
 	v.release()
 	v.mu.Unlock()
+	defer func() {
+		v.mu.Lock()
+		v.reclaiming = false
+		v.release() // a change that waited for the journal's space has it now
+		v.mu.Unlock()
+	}()
 	j := v.led.j
 	if err := j.Publish(g.seq); err != nil {
 		return err

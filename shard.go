@@ -6,8 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/zeebo/blake3"
-
+	"github.com/hanzoai/vfs/internal/blake3"
 	"github.com/hanzoai/vfs/pkg/backend"
 )
 
@@ -128,7 +127,7 @@ func (s *shards) fetch(ctx context.Context, r ref) (*node, error) {
 		}
 		return nil, fmt.Errorf("vfs: read shard %x: %w", r[:6], err)
 	}
-	if blake3.Sum256(sealed) != r {
+	if blake3.Sum(sealed) != r {
 		return nil, fmt.Errorf("%w: shard %x does not hash to its name", ErrCorrupt, r[:6])
 	}
 	plain, err := unseal(s.c, s.aad, sealed)
@@ -154,7 +153,7 @@ func (s *shards) store(ctx context.Context, n *node) (ref, error) {
 	if err != nil {
 		return none, err
 	}
-	r := ref(blake3.Sum256(sealed))
+	r := ref(blake3.Sum(sealed))
 	if s.up != nil {
 		s.up.put(shardKey(r), sealed, nil)
 		if err := s.up.failed(); err != nil {
@@ -174,8 +173,7 @@ func (t *tree) using(up *uploader) *tree {
 	u := newTree(&sh, [32]byte{})
 	u.target, u.max, u.key = t.target, t.max, t.key
 	u.hashes.New = func() any {
-		h, _ := blake3.NewKeyed(u.key[:])
-		return h
+		return blake3.Keyed(&u.key)
 	}
 	return u
 }

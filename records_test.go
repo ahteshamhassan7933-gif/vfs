@@ -146,7 +146,7 @@ func TestSpillThenFlush(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if v.over.n >= 40 {
+	if v.over.n >= 40+3 { // the bound is checked before a change, which adds up to three records
 		t.Fatalf("%d changes pending, the limit is 40", v.over.n)
 	}
 	if got := be.Puts()["meta"]; got == 0 {
