@@ -39,8 +39,10 @@ func content(seed uint64, n int) []byte {
 	return b
 }
 
+// cfg is the configuration of a Volume of a test: a journal of 64 MiB (segments of 4 MiB,
+// which a test pays to make) in the directory the tests share.
 func cfg(be backend.Backend, c vfs.Cipher, round uint64) vfs.Config {
-	return vfs.Config{Backend: be, Cipher: c, Round: round}
+	return vfs.Config{Backend: be, Cipher: c, Round: round, Journal: storetest.Journals(), Capacity: 64 << 20}
 }
 
 // newMem creates a Volume on an in-memory store and returns the store, the
