@@ -307,7 +307,8 @@ func (n *node) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 // not for another file's writes, and not for the store. It is not interrupted: C callers
 // do not restart it (errno.go).
 func (n *node) Fsync(ctx context.Context, _ *fuse.FsyncRequest) error {
-	return errno(n.s.vol.SyncInode(context.WithoutCancel(ctx), n.ino))
+	ctx = context.WithoutCancel(ctx) // no request is answered EINTR: see errno.go
+	return errno(n.s.vol.SyncInode(ctx, n.ino))
 }
 
 // handle is an open file.

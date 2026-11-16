@@ -164,6 +164,7 @@ type Volume struct {
 	dirtyFiles map[InodeID]*fileState // the files whose live layer holds a change
 	gone       []InodeID              // files removed since the last generation was cut
 	dirty      int64
+	logged     int64  // bytes of journal the changes since the last generation was cut took
 	applied    uint64 // the journal sequence of the last change applied
 	freed      chan struct{}
 	pubErr     error // why the last attempt to publish failed, until one succeeds
@@ -491,7 +492,8 @@ func (v *Volume) mutate(ctx context.Context, build func(context.Context) (*chang
 		}
 		v.mu.Lock()
 		v.apply(c, seq)
-		early := v.early()
+		v.logged += int64(len(c.sealed))
+		early := v.gen == nil && v.pressure()
 		v.mu.Unlock()
 		v.wmu.Unlock()
 		if early {
@@ -519,6 +521,7 @@ func (v *Volume) append(ctx context.Context, c *change) (uint64, error) {
 			return 0, err
 		}
 	}
+	c.sealed = sealed
 	seq, err := v.led.j.Append(ctx, sealed)
 	if err != nil {
 		if st := v.led.j.State(); st.Err != nil {
@@ -616,10 +619,11 @@ func (v *Volume) admit(ctx context.Context) error {
 	}
 }
 
-// early reports whether enough is waiting for the store to be worth publishing before
-// the bound says it must be. mu is held.
-func (v *Volume) early() bool {
-	return v.gen == nil && (v.dirty >= v.cfg.Dirty/8 || v.over.n >= v.cfg.Overlay/8)
+// pressure reports whether enough is waiting for the store to be worth publishing before
+// the bound says it must be: an eighth of what memory may hold, or a quarter of the journal.
+// mu is held.
+func (v *Volume) pressure() bool {
+	return v.dirty >= v.cfg.Dirty/8 || v.over.n >= v.cfg.Overlay/8 || v.logged >= v.cfg.Capacity/4
 }
 
 // syncTo makes the journal's records up to seq durable on this node.
@@ -693,6 +697,8 @@ type State struct {
 	Backlog int64
 	// Err is why the journal stopped, if it did.
 	Err error
+	// Publishing is why the publisher's last attempt failed, until one succeeds.
+	Publishing error
 	// Visible, Durable and Published are the journal's three watermarks: the last change
 	// applied, the last made durable on this node, and the last the store holds.
 	Visible, Durable, Published uint64
@@ -704,7 +710,10 @@ func (v *Volume) State() State {
 		return State{}
 	}
 	st, m := v.led.j.State(), v.led.j.Marks()
-	return State{Degraded: st.Degraded, Age: st.Age, Backlog: st.Backlog, Err: st.Err, Visible: m.Visible, Durable: m.Durable, Published: m.Published}
+	v.mu.RLock()
+	failing := v.pubErr
+	v.mu.RUnlock()
+	return State{Degraded: st.Degraded || failing != nil, Age: st.Age, Backlog: st.Backlog, Err: st.Err, Publishing: failing, Visible: m.Visible, Durable: m.Durable, Published: m.Published}
 }
 
 // Recovery is what Attach found of the journal of the Round that owned the Volume before.

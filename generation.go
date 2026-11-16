@@ -71,7 +71,7 @@ func (v *Volume) cut() *generation {
 		return nil
 	}
 	g := &generation{v: v, seq: v.applied, over: v.over, gone: v.gone, next: v.next, root: v.root}
-	v.over, v.gone = newOverlay(), nil
+	v.over, v.gone, v.logged = newOverlay(), nil, 0
 	for _, f := range v.dirtyFiles {
 		fz := &layer{dirty: f.lv.dirty, dirtyN: f.lv.dirtyN, limit: f.lv.limit}
 		g.snaps = append(g.snaps, &snap{f: f, ino: f.ino, inline: f.inline, ext: f.ext, size: f.size, mtime: f.mtime, fz: fz})
@@ -507,8 +507,7 @@ func (g *generation) complete() error {
 	v.dirty -= g.bytes
 	v.gen = nil
 	v.pubErr = nil
-	close(v.freed)
-	v.freed = make(chan struct{})
+	v.release()
 	v.mu.Unlock()
 	j := v.led.j
 	if err := j.Publish(g.seq); err != nil {
@@ -552,6 +551,12 @@ func (v *Volume) publishThrough(ctx context.Context, want uint64) error {
 		}
 		return ErrClosed
 	}
+}
+
+// release wakes the callers that wait for memory: it has been freed, or will not be. mu is held.
+func (v *Volume) release() {
+	close(v.freed)
+	v.freed = make(chan struct{})
 }
 
 // wake tells the publisher there is something to do.
@@ -653,7 +658,10 @@ func (v *Volume) publisher() {
 			v.answer(v.takeRequests(), err)
 			return
 		}
-		if v.reqCount() == 0 {
+		v.mu.RLock()
+		pressing := v.pressure() && v.pubErr == nil // after a failure the journal's deadline spaces the retries
+		v.mu.RUnlock()
+		if v.reqCount() == 0 && !pressing {
 			ctx, cancel := context.WithCancel(v.base)
 			select {
 			case <-v.led.j.Due(ctx, v.cfg.Bound-v.cfg.Bound/2):
@@ -668,6 +676,9 @@ func (v *Volume) publisher() {
 		err := v.publishOnce(v.base)
 		v.mu.Lock()
 		v.pubErr = err
+		if err != nil {
+			v.release() // a writer waiting for memory learns that none is coming
+		}
 		v.mu.Unlock()
 		v.answer(reqs, err)
 	}
