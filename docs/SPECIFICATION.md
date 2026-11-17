@@ -53,6 +53,15 @@ relative to the Volume's prefix, which is joined to them with one `/`.
 | `List(prefix)` | every object whose key begins with `prefix` as a string (`ext/y/a` lists `ext/y/ab` and `ext/y/a/c`), each with its key, its size and the time the store last modified it, by the store's own clock; none is hidden |
 | `Stat(key)` | the size of the object at `key` without its body; absent is `NotFound` |
 
+**Buffers.** The caller owns the buffer of a write. Once `Put`, `PutIfAbsent` or `PutIfVersion`
+returns, the store client MUST NOT read it again, whatever it did to send it (one request, parts, a
+retry after a failure, a request still running when the caller gave up): the caller may reuse it,
+clear it or give it back to a pool at once, and a writer does. A call that fails may have been
+read: the caller keeps the buffer until it returns, and reuses it only after. The conformance
+suite (`internal/storetest`) clears the buffer the instant a write returns and reads the object
+back, against the memory store, the directory store, the S3 client over a protocol server, and a
+real server.
+
 A Volume reads and writes with the first six. `List` and `Stat` are for tools: a
 collector (11.1), and the check of a copied Volume (5.4).
 

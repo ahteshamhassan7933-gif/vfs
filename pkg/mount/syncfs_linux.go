@@ -2,7 +2,11 @@
 
 package mount
 
-import "syscall"
+import (
+	"syscall"
+
+	"golang.org/x/sys/unix"
+)
 
 // syncfs has the kernel write back every page it holds for the file system of dir. The
 // directory is opened with the system call and not with os.Open: a process must not
@@ -13,8 +17,5 @@ func syncfs(dir string) error {
 		return err
 	}
 	defer syscall.Close(fd)
-	if _, _, errno := syscall.Syscall(syscall.SYS_SYNCFS, uintptr(fd), 0, 0); errno != 0 {
-		return errno
-	}
-	return nil
+	return unix.Syncfs(fd)
 }

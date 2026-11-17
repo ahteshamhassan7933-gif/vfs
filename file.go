@@ -380,7 +380,7 @@ func (v *Volume) write(f *fileState, p []byte, off uint64) {
 	}
 	f.lv.dirty = slices.Replace(d, i, j, merged)
 	f.lv.dirtyN += grown
-	v.dirty += grown
+	v.account(grown)
 }
 
 // Truncate sets the file's length. Shrinking discards the bytes past it for
@@ -429,7 +429,7 @@ func (v *Volume) truncate(f *fileState, size uint64, when time.Time) {
 			kept = append(kept, s)
 			n += int64(len(s.data)) + spanCost
 		}
-		v.dirty += n - f.lv.dirtyN
+		v.account(n - f.lv.dirtyN)
 		f.lv.dirty, f.lv.dirtyN = kept, n
 	}
 	f.size, f.mtime = size, when

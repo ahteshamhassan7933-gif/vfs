@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hanzoai/vfs/journal"
@@ -78,6 +79,10 @@ type Config struct {
 	// Clock supplies the times of changes and the timers of the bound: nil is the wall clock.
 	Clock journal.Clock
 
+	// Budget bounds, across every Volume that is given it, the memory held for changes the store
+	// does not have yet. Nil: each Volume is bounded by Dirty alone.
+	Budget *Budget
+
 	Workers int // chunks, hashes and seals in parallel; default the number of CPUs, at most 16
 	Streams int // objects written to the store in parallel; default 8
 }
@@ -137,6 +142,8 @@ type Volume struct {
 	round  uint64 // 0 when read-only
 	t      *tree
 	record int // the most bytes of a write one journal record holds
+	mem    *Budget
+	packs  atomic.Int64 // bytes of packs made and not yet in the store
 
 	chunks *lru[chunkID, []byte]
 	fills  flights[chunkID, []byte] // one fetch for every caller that misses the same chunk
@@ -208,6 +215,7 @@ func newVolume(cfg Config) *Volume {
 		done:       make(chan struct{}),
 	}
 	v.record = int(min(4<<20, v.segment()/4))
+	v.mem = cfg.Budget
 	v.base, v.stop = context.WithCancel(context.Background())
 	return v
 }
@@ -379,6 +387,11 @@ func (v *Volume) Close() error {
 	v.wmu.Lock() // the change in progress finishes
 	v.wmu.Unlock()
 	v.stop()
+	defer func() {
+		v.mu.Lock()
+		v.account(-v.dirty - v.packs.Swap(0))
+		v.mu.Unlock()
+	}()
 	var err error
 	if v.led != nil {
 		close(v.quit)
@@ -601,7 +614,7 @@ func (v *Volume) touch(f *fileState, seq uint64) {
 // records go with the next generation.
 func (v *Volume) forget(id InodeID) {
 	if f := v.files[id]; f != nil {
-		v.dirty -= f.lv.dirtyN
+		v.account(-f.lv.dirtyN)
 		f.gone = true
 		delete(v.files, id)
 	}
@@ -621,6 +634,8 @@ func (v *Volume) admit(ctx context.Context) error {
 			pending += v.gen.over.n
 		}
 		full := v.dirty >= v.cfg.Dirty || pending >= v.cfg.Overlay
+		spent, shared := v.mem.full()
+		full = full || (spent && v.dirty > 0) // a Volume holding nothing is always let in
 		freed, why := v.freed, v.pubErr
 		v.mu.RUnlock()
 		if !full {
@@ -632,12 +647,20 @@ func (v *Volume) admit(ctx context.Context) error {
 		v.wake()
 		select {
 		case <-freed:
+		case <-shared:
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-v.base.Done():
 			return ErrClosed
 		}
 	}
+}
+
+// account changes what the Volume holds that the store does not have, here and in its Budget.
+// mu is held.
+func (v *Volume) account(n int64) {
+	v.dirty += n
+	v.mem.add(n)
 }
 
 // draining reports whether a publication that is not failing is, or soon will be, freeing

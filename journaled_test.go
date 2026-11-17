@@ -1,6 +1,7 @@
 package vfs_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -751,4 +752,107 @@ func TestJournalFillPublishesEarly(t *testing.T) {
 	if got := readAll(t, reopen(t, mem, c), in.ID); len(got) != n*len(block) {
 		t.Fatalf("the store has %d bytes, want %d", len(got), n*len(block))
 	}
+}
+
+// One Budget bounds the memory of every Volume given it: sixty-four Volumes whose store has
+// stopped answering take writes until the Budget is spent, and then wait; the memory they hold is
+// the Budget and one change of each writer, not sixty-four times a Volume's share; reads of what is
+// held still run; and when the store answers every writer finishes and the memory is given back.
+func TestOneBudgetBoundsManyVolumes(t *testing.T) {
+	const volumes, block, limit = 64, 64 << 10, 8 << 20
+	budget := vfs.NewBudget(limit)
+	release := make(chan struct{})
+	var armed atomic.Bool // the store answers while the Volumes are made, and then stops
+	var ents []*stall
+	var vols []*vfs.Volume
+	var files []*vfs.File
+	for range volumes {
+		st := &stall{on: func(string) bool { return armed.Load() }, entered: make(chan struct{}, 1), release: release}
+		_, _, v, _ := pair(t, func(b backend.Backend) backend.Backend { st.Backend = b; return st }, func(c *vfs.Config) {
+			c.Budget, c.Capacity = budget, 16<<20
+		})
+		// Created before the store stops answering: the stall holds writes, and a create is not one.
+		in, err := v.Create(ctx, vfs.RootInode, "f", 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := v.Open(ctx, in.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ents, vols, files = append(ents, st), append(vols, v), append(files, f)
+	}
+	armed.Store(true)
+	var wg sync.WaitGroup
+	var written atomic.Int64
+	for i, f := range files {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for off := range 32 { // 2 MiB each: 128 MiB in all against a Budget of 8 MiB
+				if _, err := f.WriteAt(ctx, content(uint64(i), block), int64(off*block)); err != nil {
+					t.Errorf("volume %d write %d: %v", i, off, err)
+					return
+				}
+				written.Add(block)
+			}
+		}()
+	}
+	// The writers stop, one after another, at the Budget. Wait for the count to stand still.
+	last, still := int64(-1), 0
+	for deadline := time.Now().Add(20 * time.Second); still < 20 && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if w := written.Load(); w == last {
+			still++
+		} else {
+			last, still = w, 0
+		}
+	}
+	if written.Load() >= volumes*32*block {
+		t.Fatalf("the writers finished (%d MiB) with the store stopped: nothing bounded them", written.Load()>>20)
+	}
+	// What the Budget admits is bounded by it, and one change of each writer that was admitted at the
+	// same moment (a Volume that holds nothing is always let in); the packs made from it live beside it
+	// until the store has them, and a Volume that has one on its way makes no other while the Budget is
+	// spent, so the sum is under twice the two.
+	if used := budget.Used(); used > 2*(limit+volumes*block) {
+		t.Fatalf("the Volumes hold %d MiB against a Budget of %d MiB", used>>20, limit>>20)
+	}
+	t.Logf("store stopped: %d MiB written, %d MiB held, Budget %d MiB", written.Load()>>20, budget.Used()>>20, limit>>20)
+
+	// Reads and stats of what is held do not wait for the store or for the Budget.
+	for i := range 4 {
+		done := make(chan error, 1)
+		go func() {
+			if _, err := vols[i].Stat(ctx, vfs.RootInode); err != nil {
+				done <- err
+				return
+			}
+			buf := make([]byte, block)
+			_, err := files[i].ReadAt(ctx, buf, 0)
+			if err == nil && !bytes.Equal(buf, content(uint64(i), block)) {
+				err = errors.New("the read returned other bytes")
+			}
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("read of volume %d: %v", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("a read of volume %d waits behind a stalled store and a spent Budget", i)
+		}
+	}
+
+	close(release)
+	wg.Wait()
+	for i, v := range vols {
+		if err := v.Flush(ctx); err != nil {
+			t.Fatalf("volume %d: %v", i, err)
+		}
+	}
+	if used := budget.Used(); used != 0 {
+		t.Fatalf("the Volumes hold %d bytes of the Budget after everything was published", used)
+	}
+	_ = ents
 }

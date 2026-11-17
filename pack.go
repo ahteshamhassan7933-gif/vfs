@@ -35,6 +35,10 @@ type pack struct {
 	buf []byte
 }
 
+// packRoom is what a pack's buffer holds beyond the size at which it is sent: a frame may
+// end past it, by at most a chunk and its seal.
+const packRoom = maxChunk + 64<<10
+
 func (p *pack) empty() bool { return len(p.buf) == 0 }
 
 // add appends a sealed frame and returns where it lies.
@@ -42,6 +46,9 @@ func (p *pack) add(frame []byte) (where, error) {
 	if p.empty() {
 		if _, err := rand.Read(p.id[:]); err != nil {
 			return where{}, err
+		}
+		if p.buf == nil {
+			p.buf = packSlabs.Get(packTarget + packRoom)[:0]
 		}
 	}
 	w := where{pack: p.id, off: uint64(len(p.buf)), n: uint64(len(frame))}
@@ -53,6 +60,7 @@ func (p *pack) add(frame []byte) (where, error) {
 type packed struct {
 	id   packID
 	buf  []byte
+	v    *Volume
 	done atomic.Bool
 }
 
@@ -88,16 +96,42 @@ func (pk *packer) flush() {
 
 // send hands the open pack to the uploader. mu is held.
 func (pk *packer) send() {
-	p := &packed{id: pk.cur.id, buf: pk.cur.buf}
+	// A pack is memory made from changes that are already counted, and lives beside them until the
+	// store has it. A Volume with a pack on its way waits for the Budget before it makes another; one
+	// with none makes one, so that a spent Budget never keeps a publication from starting.
+	v := pk.g.v
+	for v.packs.Load() > 0 {
+		spent, freed := v.mem.full()
+		if !spent {
+			break
+		}
+		select {
+		case <-freed:
+			continue
+		case <-pk.up.ctx.Done():
+		}
+		break
+	}
+	p := &packed{id: pk.cur.id, buf: pk.cur.buf, v: pk.g.v}
 	pk.cur = pack{}
 	pk.g.packs = append(pk.g.packs, p)
+	p.v.packs.Add(int64(len(p.buf)))
+	p.v.mem.add(int64(len(p.buf)))
 	pk.up.put(packKey(p.id), p.buf, p.finish)
 }
 
-// finish is called when the store has the pack: its bytes are not needed again.
+// finish is called when the store has the pack: its bytes are not needed again, and the buffer
+// goes back to the pool. The pack was held until now so that a request that was tried again
+// read the same bytes.
 func (p *packed) finish() {
+	n := int64(len(p.buf))
+	buf := p.buf
 	p.buf = nil
 	p.done.Store(true)
+	packSlabs.Put(buf)
+	if p.v.packs.Add(-n) >= 0 {
+		p.v.mem.add(-n)
+	}
 }
 
 // getChunk returns the plaintext of a chunk, checked against its id, reading the chunk

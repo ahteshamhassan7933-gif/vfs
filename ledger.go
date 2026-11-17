@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"github.com/hanzoai/vfs/journal"
 )
@@ -95,23 +94,11 @@ func (l *ledger) sealChange(c *change) ([]byte, error) {
 	return l.aead.Seal(buf[:n], nonce, plain, l.aad), nil
 }
 
-// Sealed records are the size of a write and are made at the rate of writes: they are
-// kept for the next one.
-var buffers sync.Pool
+// Sealed records are the size of a write and are made at the rate of writes: their buffers
+// come from the pool and go back when the journal has copied them.
+func takeBuffer(n int) []byte { return packSlabs.Get(n)[:0] }
 
-func takeBuffer(n int) []byte {
-	if b, ok := buffers.Get().(*[]byte); ok && cap(*b) >= n {
-		return (*b)[:0]
-	}
-	return make([]byte, 0, max(n, 256<<10))
-}
-
-func giveBuffer(b []byte) {
-	if cap(b) >= 64<<10 && cap(b) <= 8<<20 {
-		b = b[:0]
-		buffers.Put(&b)
-	}
-}
+func giveBuffer(b []byte) { packSlabs.Put(b) }
 
 func (l *ledger) open(sealed []byte) ([]byte, error) {
 	n := l.aead.NonceSize()

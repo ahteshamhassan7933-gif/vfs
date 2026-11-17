@@ -2123,5 +2123,53 @@
   "pkg": "./pkg/mount",
   "run": "^TestFUSEStopPublishes$",
   "tags": "fuse"
+ },
+ {
+  "name": "pack: the buffer goes back before the store has it",
+  "file": "pack.go",
+  "old": "\tpk.up.put(packKey(p.id), p.buf, p.finish)\n}",
+  "new": "\tpk.up.put(packKey(p.id), p.buf, p.finish)\n\tpackSlabs.Put(p.buf)\n}",
+  "pkg": ".",
+  "run": "TestFailureAtEveryWrite|TestSigkill|TestProcessCrashReplays|TestGenerationOrdering"
+ },
+ {
+  "name": "pack: the buffer goes back while a retry may need it",
+  "file": "pack.go",
+  "old": "\tp.buf = nil\n\tp.done.Store(true)\n\tpackSlabs.Put(buf)",
+  "new": "\tp.done.Store(true)\n\tpackSlabs.Put(buf)",
+  "pkg": ".",
+  "run": "TestFailureAtEveryWrite|TestSigkill"
+ },
+ {
+  "name": "budget: memory of changes is not counted",
+  "file": "volume.go",
+  "old": "\tv.dirty += n\n\tv.mem.add(n)\n}",
+  "new": "\tv.dirty += n\n}",
+  "pkg": ".",
+  "run": "TestOneBudgetBoundsManyVolumes"
+ },
+ {
+  "name": "budget: packs on their way are not counted",
+  "file": "pack.go",
+  "old": "\tp.v.mem.add(int64(len(p.buf)))\n",
+  "new": "",
+  "pkg": ".",
+  "run": "TestOneBudgetBoundsManyVolumes"
+ },
+ {
+  "name": "budget: a Volume that holds nothing waits for a spent Budget",
+  "file": "volume.go",
+  "old": "full = full || (spent && v.dirty > 0)",
+  "new": "full = full || spent",
+  "pkg": ".",
+  "run": "TestOneBudgetBoundsManyVolumes"
+ },
+ {
+  "name": "ledger: a sealed record is the plaintext",
+  "file": "ledger.go",
+  "old": "return l.aead.Seal(buf[:n], nonce, plain, l.aad), nil",
+  "new": "return append(buf[:n], plain...), nil",
+  "pkg": ".",
+  "run": "TestProcessCrashReplays|TestReplayTwice"
  }
 ]

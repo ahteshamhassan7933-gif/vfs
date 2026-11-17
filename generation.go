@@ -504,7 +504,7 @@ func (g *generation) complete() error {
 			delete(v.files, f.ino)
 		}
 	}
-	v.dirty -= g.bytes
+	v.account(-g.bytes)
 	v.gen, v.reclaiming = nil, true
 	v.pubErr = nil
 	v.release()

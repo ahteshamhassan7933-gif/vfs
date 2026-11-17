@@ -113,7 +113,8 @@ func TestLostAckThenTakeoverIsNotReportedLost(t *testing.T) {
 // keeps chunking, sealing and uploading packs that no Head will ever name. This
 // measures that and holds the line that matters: the orphans change nothing in the
 // committed tree, and the commit refuses. Reclaiming them is a collector's job, which
-// is not built yet.
+// is not built yet. The writer is told by its next publication, whichever asks for it: the
+// Volume's own (the bound, or the journal filling) or a Flush.
 func TestDeposedWriterIsToldAtItsNextCommit(t *testing.T) {
 	mem := storetest.NewMem()
 	c := vfsAge(t)
@@ -140,6 +141,10 @@ func TestDeposedWriterIsToldAtItsNextCommit(t *testing.T) {
 	for i := 0; i < sized(24, 96); i++ { // 96 MiB
 		chunk := content(uint64(1000+i), 1<<20)
 		if _, err := f.WriteAt(ctx, chunk, wrote); err != nil {
+			// Its own publication, which the journal's fill or the bound starts, told it.
+			if errors.Is(err, vfs.ErrStaleRound) {
+				break
+			}
 			t.Fatal(err)
 		}
 		wrote += int64(len(chunk))
