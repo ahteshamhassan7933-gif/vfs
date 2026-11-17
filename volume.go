@@ -78,6 +78,9 @@ type Config struct {
 	Bound time.Duration
 	// Clock supplies the times of changes and the timers of the bound: nil is the wall clock.
 	Clock journal.Clock
+	// Disk makes the journal's file layer for a directory: nil is the operating system's files. A
+	// caller wraps journal.Files to observe, count or hold what the journal does to its files.
+	Disk func(dir string) (journal.Disk, error)
 
 	// Budget bounds, across every Volume that is given it, the memory held for changes the store
 	// does not have yet. Nil: each Volume is bounded by Dirty alone.
@@ -384,9 +387,9 @@ func (v *Volume) Close() error {
 	}
 	v.closed = true
 	v.mu.Unlock()
+	v.stop()     // a change that waits for memory or for the journal's space is let go
 	v.wmu.Lock() // the change in progress finishes
 	v.wmu.Unlock()
-	v.stop()
 	defer func() {
 		v.mu.Lock()
 		v.account(-v.dirty - v.packs.Swap(0))

@@ -45,7 +45,7 @@ func TestHeadFieldsSurviveACommit(t *testing.T) {
 	if err := Create(ctx, Config{Backend: be, Cipher: c}); err != nil {
 		t.Fatal(err)
 	}
-	v, err := Attach(ctx, Config{Backend: be, Cipher: c, Round: 1, Journal: storetest.Journals(), Capacity: 64 << 20})
+	v, err := Attach(ctx, Config{Backend: be, Cipher: c, Round: 1, Journal: storetest.Journals(), Capacity: 16 << 20, Disk: storetest.Disk})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestHeadOfALaterBuildIsRefusedByEveryDoor(t *testing.T) {
 	}
 	before := be.Dump()["head"]
 	cfg := func(round uint64) Config {
-		return Config{Backend: be, Cipher: c, Round: round, Journal: storetest.Journals(), Capacity: 64 << 20}
+		return Config{Backend: be, Cipher: c, Round: round, Journal: storetest.Journals(), Capacity: 16 << 20, Disk: storetest.Disk}
 	}
 	if _, err := Open(ctx, cfg(0)); !errors.Is(err, ErrNeeds) {
 		t.Errorf("Open = %v", err)

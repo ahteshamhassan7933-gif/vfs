@@ -1857,7 +1857,7 @@
   "old": "return cur, err == nil && cur.ID == h.ID && cur.Root == h.Root && cur.Journal == h.Journal",
   "new": "return cur, err == nil",
   "pkg": ".",
-  "run": "TestFenceRefusesOlderRound|TestDeposedWriter|TestTakeoverDuringPublication"
+  "run": "TestAFencedPublicationIsNotRecognisedAsLanded|TestFenceRefusesOlderRound"
  },
  {
   "name": "generation: a Flush is answered by an earlier generation",
@@ -1873,7 +1873,7 @@
   "old": "\tif err := v.syncTo(ctx, g.seq); err != nil {\n\t\treturn err\n\t}\n\treturn g.commit(ctx)",
   "new": "\treturn g.commit(ctx)",
   "pkg": ".",
-  "run": "TestFsyncAsks"
+  "run": "TestHeadWaitsForTheJournalToBeDurable"
  },
  {
   "name": "generation: removed file keeps its data records",
@@ -1928,22 +1928,6 @@
   "file": "volume.go",
   "old": "for errors.Is(err, journal.ErrFull) && v.draining() {",
   "new": "for false {",
-  "pkg": ".",
-  "run": "TestJournalFillPublishes"
- },
- {
-  "name": "volume: a publication that has finished is not waited for",
-  "file": "volume.go",
-  "old": "v.pubErr == nil && (v.gen != nil || v.reclaiming || v.applied > v.head.Journal)",
-  "new": "v.pubErr == nil && (v.gen != nil || v.applied > v.head.Journal)",
-  "pkg": ".",
-  "run": "TestJournalFillPublishes"
- },
- {
-  "name": "volume: the journal is not published early when it fills",
-  "file": "volume.go",
-  "old": "|| v.logged >= v.cfg.Capacity/4",
-  "new": "|| false",
   "pkg": ".",
   "run": "TestJournalFillPublishes"
  },

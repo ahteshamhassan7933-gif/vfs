@@ -112,8 +112,8 @@ func (l *ledger) open(sealed []byte) ([]byte, error) {
 	return plain, nil
 }
 
-func (v *Volume) journalOptions(round, published uint64) journal.Options {
-	return journal.Options{
+func (v *Volume) journalOptions(dir string, round, published uint64) (journal.Options, error) {
+	opt := journal.Options{
 		Capacity:  v.cfg.Capacity,
 		Segment:   v.segment(),
 		Bound:     v.cfg.Bound,
@@ -121,6 +121,14 @@ func (v *Volume) journalOptions(round, published uint64) journal.Options {
 		Lineage:   lineage(v.id, round),
 		Clock:     v.cfg.Clock,
 	}
+	if v.cfg.Disk != nil {
+		d, err := v.cfg.Disk(dir)
+		if err != nil {
+			return opt, err
+		}
+		opt.Disk = d
+	}
+	return opt, nil
 }
 
 // segment is the size of the journal's segment files: a sixteenth of its capacity, from a
@@ -155,7 +163,11 @@ func (v *Volume) startLedger(round, published uint64) (*ledger, error) {
 	if err != nil {
 		return nil, err
 	}
-	j, err := journal.Open(at.dir, v.journalOptions(round, published))
+	opt, err := v.journalOptions(at.dir, round, published)
+	if err != nil {
+		return nil, err
+	}
+	j, err := journal.Open(at.dir, opt)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +190,11 @@ func (v *Volume) openLedger(round, published uint64) (*ledger, error) {
 	if err != nil {
 		return nil, err
 	}
-	j, err := journal.Open(at.dir, v.journalOptions(round, published))
+	opt, err := v.journalOptions(at.dir, round, published)
+	if err != nil {
+		return nil, err
+	}
+	j, err := journal.Open(at.dir, opt)
 	if err != nil {
 		return nil, err
 	}

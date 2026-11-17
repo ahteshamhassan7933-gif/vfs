@@ -17,7 +17,7 @@ func internalVolume(t *testing.T, conf Config) (*storetest.Mem, *Volume) {
 	t.Helper()
 	be := storetest.NewMem()
 	conf.Backend, conf.Cipher = be, plainCipher{}
-	conf.Journal, conf.Capacity = storetest.Journals(), 64<<20
+	conf.Journal, conf.Capacity, conf.Disk = storetest.Journals(), 16<<20, storetest.Disk
 	if err := Create(context.Background(), conf); err != nil {
 		t.Fatal(err)
 	}

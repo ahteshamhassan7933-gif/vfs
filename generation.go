@@ -650,6 +650,7 @@ func (v *Volume) publishNow(ctx context.Context) error {
 // to the next change when one is published. Nothing polls.
 func (v *Volume) publisher() {
 	defer close(v.done)
+	idle := false
 	for {
 		v.mu.RLock()
 		stopped := v.fenced || v.failed != nil || v.closed
@@ -665,7 +666,10 @@ func (v *Volume) publisher() {
 			return
 		}
 		v.mu.RLock()
-		pressing := v.pressure() && v.pubErr == nil // after a failure the journal's deadline spaces the retries
+		// After a failure the journal's deadline spaces the retries; a cycle that had nothing to publish
+		// does not run again for pressure alone, so a count that is off cannot make the loop spin.
+		pressing := v.pressure() && v.pubErr == nil && !idle
+		work := v.applied != v.head.Journal || v.gen != nil
 		v.mu.RUnlock()
 		if v.reqCount() == 0 && !pressing {
 			ctx, cancel := context.WithCancel(v.base)
@@ -679,6 +683,7 @@ func (v *Volume) publisher() {
 			cancel()
 		}
 		reqs := v.takeRequests()
+		idle = !work && len(reqs) == 0
 		err := v.publishOnce(v.base)
 		v.mu.Lock()
 		v.pubErr = err

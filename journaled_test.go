@@ -856,3 +856,96 @@ func TestOneBudgetBoundsManyVolumes(t *testing.T) {
 	}
 	_ = ents
 }
+
+// holdSync is a journal file layer whose syncs wait while it is held.
+type holdSync struct {
+	journal.Disk
+	held atomic.Bool
+	gate chan struct{}
+}
+
+func (d *holdSync) Create(name string, size int64) (journal.File, error) {
+	f, err := d.Disk.Create(name, size)
+	return &heldFile{File: f, d: d}, err
+}
+
+func (d *holdSync) Open(name string) (journal.File, error) {
+	f, err := d.Disk.Open(name)
+	return &heldFile{File: f, d: d}, err
+}
+
+type heldFile struct {
+	journal.File
+	d *holdSync
+}
+
+func (f *heldFile) Sync() error {
+	if f.d.held.Load() {
+		<-f.d.gate
+	}
+	return f.File.Sync()
+}
+
+// The Head never names a journal sequence that is not durable on this node: with the journal's disk
+// held in its sync, a publication gets as far as the Head and no further, and goes on when it is let go.
+func TestHeadWaitsForTheJournalToBeDurable(t *testing.T) {
+	var heads atomic.Int64
+	disk := &holdSync{gate: make(chan struct{})}
+	_, _, v, _ := pair(t, func(b backend.Backend) backend.Backend {
+		return &storetest.Hook{Backend: b, Before: func(op, key string) error {
+			if key == "head" && op == "putver" {
+				heads.Add(1)
+			}
+			return nil
+		}}
+	}, func(c *vfs.Config) {
+		c.Disk = func(dir string) (journal.Disk, error) {
+			d, err := journal.Files(dir)
+			disk.Disk = d
+			return disk, err
+		}
+	})
+	write(t, v, vfs.RootInode, "f", []byte("data"))
+	before := heads.Load()
+	disk.held.Store(true)
+	done := make(chan error, 1)
+	go func() { done <- v.Flush(ctx) }()
+	select {
+	case err := <-done:
+		t.Fatalf("Flush returned (%v) while the journal's sync was held", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if n := heads.Load() - before; n != 0 {
+		t.Fatalf("%d Head writes while the journal's disk was held: the Head names a sequence the node does not have", n)
+	}
+	disk.held.Store(false)
+	close(disk.gate)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := heads.Load() - before; n != 1 {
+		t.Fatalf("%d Head writes after the journal was let go", n)
+	}
+}
+
+// A publication that the store refuses because the Volume was fenced is refused, not taken for a
+// commit that landed: the Head the successor carried forward is not this Volume's tree.
+func TestAFencedPublicationIsNotRecognisedAsLanded(t *testing.T) {
+	mem, c, a, _ := pair(t, nil, nil)
+	write(t, a, vfs.RootInode, "before", []byte("b"))
+	flush(t, a)
+	other := cfg(mem, c, 2)
+	other.Journal = t.TempDir() + "/elsewhere"
+	b, err := vfs.Attach(ctx, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	write(t, a, vfs.RootInode, "after", []byte("a"))
+	if err := a.Flush(ctx); !errors.Is(err, vfs.ErrStaleRound) {
+		t.Fatalf("the fenced Volume's first publication = %v, want ErrStaleRound", err)
+	}
+	if _, err := reopen(t, mem, c).Resolve(ctx, "/after"); err == nil {
+		t.Fatal("the fenced Volume's change is in the store")
+	}
+}

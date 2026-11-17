@@ -464,7 +464,7 @@ func TestTailThroughEveryDoor(t *testing.T) {
 	if err := Create(ctx, Config{Backend: be, Cipher: c}); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{Backend: be, Cipher: c, Journal: storetest.Journals(), Capacity: 64 << 20}
+	cfg := Config{Backend: be, Cipher: c, Journal: storetest.Journals(), Capacity: 16 << 20, Disk: storetest.Disk}
 	read := func() []byte {
 		raw := be.Dump()["head"]
 		plain, err := unseal(c, headAAD(be.String()), raw[30:])
@@ -616,7 +616,7 @@ func TestCommitCarriesNeedsAndTail(t *testing.T) {
 	if err := Create(ctx, Config{Backend: be, Cipher: c}); err != nil {
 		t.Fatal(err)
 	}
-	v, err := Attach(ctx, Config{Backend: be, Cipher: c, Round: 1, Journal: storetest.Journals(), Capacity: 64 << 20})
+	v, err := Attach(ctx, Config{Backend: be, Cipher: c, Round: 1, Journal: storetest.Journals(), Capacity: 16 << 20, Disk: storetest.Disk})
 	if err != nil {
 		t.Fatal(err)
 	}

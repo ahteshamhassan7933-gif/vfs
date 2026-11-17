@@ -227,7 +227,7 @@ func runsRun(t *testing.T, seed uint64, canonical bool) {
 		t.Fatal(err)
 	}
 	mk := func(round uint64) *Volume {
-		cf := Config{Backend: be, Cipher: c, Round: round, Journal: storetest.Journals(), Capacity: 64 << 20}
+		cf := Config{Backend: be, Cipher: c, Round: round, Journal: storetest.Journals(), Capacity: 16 << 20, Disk: storetest.Disk}
 		if !canonical {
 			cf.Dirty, cf.Overlay, cf.Cache = 150<<10, 5, 1<<20
 		}

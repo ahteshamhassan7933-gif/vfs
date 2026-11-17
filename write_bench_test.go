@@ -1,6 +1,7 @@
 package vfs_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/hanzoai/vfs"
@@ -42,4 +43,28 @@ func byteSize(n int) string {
 		return "128KiB"
 	}
 	return "4KiB"
+}
+
+// BenchmarkFlushOfASmallFile is a create, a small write and a Flush: one generation of one file.
+func BenchmarkFlushOfASmallFile(b *testing.B) {
+	_, _, v, _ := pair(b, nil, nil)
+	buf := content(3, 2000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		in, err := v.Create(ctx, vfs.RootInode, fmt.Sprint("f", i), 0o644)
+		if err != nil {
+			b.Fatal(err)
+		}
+		f, err := v.Open(ctx, in.ID)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := f.WriteAt(ctx, buf, 0); err != nil {
+			b.Fatal(err)
+		}
+		f.Close()
+		if err := v.Flush(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

@@ -23,7 +23,7 @@ func headVolume(t *testing.T) (*storetest.Mem, Cipher, Config) {
 	if err := Create(context.Background(), Config{Backend: be, Cipher: c}); err != nil {
 		t.Fatal(err)
 	}
-	return be, c, Config{Backend: be, Cipher: c, Journal: storetest.Journals(), Capacity: 64 << 20}
+	return be, c, Config{Backend: be, Cipher: c, Journal: storetest.Journals(), Capacity: 16 << 20, Disk: storetest.Disk}
 }
 
 // putRaw replaces the Head's plaintext with exactly plain (sealed to the place), at round 0.
