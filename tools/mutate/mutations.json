@@ -130,8 +130,8 @@
  {
   "name": "file: holes are chunked as zeros",
   "file": "file.go",
-  "old": "\tfor _, e := range f.ext {\n\t\tif e.off >= lim {\n\t\t\tbreak\n\t\t}\n\t\tadd(e.off, min(e.end(), lim))\n\t}",
-  "new": "\tadd(0, f.size)\n\tfor _, e := range f.ext {\n\t\tif e.off >= lim {\n\t\t\tbreak\n\t\t}\n\t\tadd(e.off, min(e.end(), lim))\n\t}",
+  "old": "\tfor _, e := range f.ext {\n\t\tif e.off >= lim {\n\t\t\tbreak\n\t\t}\n\t\tsettled(e.off, min(e.end(), lim))\n\t}",
+  "new": "\tadd(0, f.size)\n\tfor _, e := range f.ext {\n\t\tif e.off >= lim {\n\t\t\tbreak\n\t\t}\n\t\tsettled(e.off, min(e.end(), lim))\n\t}",
   "pkg": ".",
   "run": "TestSparseTruncate|TestSparsePetabyte|TestChunkList"
  },
@@ -355,7 +355,7 @@
  {
   "name": "record: a missing inode field accepted",
   "file": "record.go",
-  "old": "\tif seen != 1<<fieldMode|1<<fieldSize|1<<fieldMtime|1<<fieldAtime|1<<fieldCtime {",
+  "old": "\tif seen&required != required {",
   "new": "\tif seen == 0 {",
   "pkg": ".",
   "run": "TestInodeRecord"
@@ -411,8 +411,8 @@
  {
   "name": "ops: Create over an existing name",
   "file": "ops.go",
-  "old": "if _, ok, err := v.get(ctx, keyEntry(dir, name)); err != nil || ok {",
-  "new": "if _, _, err := v.get(ctx, keyEntry(dir, name)); err != nil {",
+  "old": "\tif _, ok, err := v.get(ctx, keyEntry(dir, name)); err != nil || ok {\n\t\tif err == nil {\n\t\t\terr = fmt.Errorf(\"%w: %q in inode %d\", fs.ErrExist, name, dir)\n\t\t}\n\t\treturn Inode{}, err\n\t}\n\tif v.cfg.Capacity",
+  "new": "\tif _, _, err := v.get(ctx, keyEntry(dir, name)); err != nil {\n\t\treturn Inode{}, err\n\t}\n\tif v.cfg.Capacity",
   "pkg": ".",
   "run": "TestNamespace"
  },
@@ -427,18 +427,18 @@
  {
   "name": "ops: removed file keeps its data records",
   "file": "ops.go",
-  "old": "\t\tfor _, r := range data {\n\t\t\tv.over.del(r.key)",
-  "new": "\t\tfor _, r := range data[:0] {\n\t\t\tv.over.del(r.key)",
+  "old": "\tfor _, r := range data {\n\t\tv.over.del(r.key)\n\t}",
+  "new": "\tfor _, r := range data[:0] {\n\t\tv.over.del(r.key)\n\t}",
   "pkg": ".",
-  "run": "TestRecordsFollow"
+  "run": "TestRecordsFollow|TestRemoved|TestModelPosix"
  },
  {
   "name": "ops: removed file stays openable",
-  "file": "ops.go",
-  "old": "\t\t\tf.gone = true\n",
+  "file": "file.go",
+  "old": "\tif f.orphan {\n\t\treturn nil, fmt.Errorf(\"%w: inode %d was unlinked\", fs.ErrNotExist, ino)\n\t}\n",
   "new": "",
   "pkg": ".",
-  "run": "TestRemoved"
+  "run": "TestRemovedFileStaysOpenForItsHandle"
  },
  {
   "name": "cipher: key id not honoured on open",
@@ -667,17 +667,17 @@
  {
   "name": "mount: chmod and utimens succeed silently",
   "file": "pkg/mount/fuse_unix.go",
-  "old": "\tif req.Valid.Mode() || req.Valid.Uid() || req.Valid.Gid() || req.Valid.Atime() || req.Valid.Mtime() {\n\t\treturn unsupported\n\t}\n",
+  "old": "\tif req.Valid.Mode() {\n\t\tm := fs.FileMode(req.Mode)\n\t\tc.Mode = &m\n\t}\n",
   "new": "",
   "pkg": "./pkg/mount",
-  "run": "TestFUSEUnsupported",
+  "run": "^TestFUSEAttributes$|^TestSetattrIsTheVolumes$",
   "tags": "fuse"
  },
  {
   "name": "mount: no dot entries",
   "file": "pkg/mount/fuse_unix.go",
-  "old": "\tout = append(out,\n\t\tfuse.Dirent{Inode: uint64(n.ino), Name: \".\", Type: fuse.DT_Dir},\n\t\tfuse.Dirent{Inode: uint64(n.parent), Name: \"..\", Type: fuse.DT_Dir})\n",
-  "new": "",
+  "old": "\tout = append(out,\n\t\tfuse.Dirent{Inode: uint64(n.ino), Name: \".\", Type: fuse.DT_Dir},\n\t\tfuse.Dirent{Inode: uint64(up), Name: \"..\", Type: fuse.DT_Dir})\n",
+  "new": "\t_ = up\n",
   "pkg": "./pkg/mount",
   "run": "TestFUSEUnlinkVersus",
   "tags": "fuse"
@@ -711,7 +711,7 @@
  },
  {
   "name": "mount: a session without a mount context",
-  "file": "pkg/mount/errno.go",
+  "file": "pkg/mount/fuse_unix.go",
   "old": "return &session{vol: vol, base: base, group: newCommitter(vol)}",
   "new": "return &session{vol: vol, group: newCommitter(vol)}",
   "pkg": "./pkg/mount",
@@ -1332,8 +1332,8 @@
  {
   "name": "name limit 256",
   "file": "ops.go",
-  "old": "len(name) > 255",
-  "new": "len(name) > 256",
+  "old": "\tmaxName   = 255\n",
+  "new": "\tmaxName   = 256\n",
   "pkg": ".",
   "run": "."
  },
@@ -2035,5 +2035,1097 @@
   "pkg": "./pkg/mount",
   "run": "^TestFinish",
   "tags": "fuse"
+ },
+ {
+  "name": "rename: the old name is kept",
+  "file": "rename.go",
+  "old": "\t\tv.over.del(keyEntry(oldDir, oldName))\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^Test(Rename|ModelPosix|FailureAtEveryWrite)"
+ },
+ {
+  "name": "rename: a directory can move into itself",
+  "file": "rename.go",
+  "old": "\tif src.IsDir() {\n\t\tif in, err := v.within(ctx, newDir, srcID); err != nil || in {",
+  "new": "\tif false {\n\t\tif in, err := v.within(ctx, newDir, srcID); err != nil || in {",
+  "pkg": ".",
+  "run": "^TestRenameDirectoryNeverBecomesItsOwnAncestor$|^TestModelPosix$"
+ },
+ {
+  "name": "rename: an exchange with a descendant is not refused",
+  "file": "rename.go",
+  "old": "\tif flags&RenameExchange != 0 && dst.IsDir() {",
+  "new": "\tif false && flags&RenameExchange != 0 && dst.IsDir() {",
+  "pkg": ".",
+  "run": "^TestRenameDirectoryNeverBecomesItsOwnAncestor$|^TestModelPosix$"
+ },
+ {
+  "name": "rename: two names of one inode are not left alone",
+  "file": "rename.go",
+  "old": "\tif dstID == srcID {\n\t\treturn nil // two names of one inode: nothing to do\n\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestRenameOfTwoNamesOfOneInodeIsNothing$|^TestModelPosix$"
+ },
+ {
+  "name": "rename: no-replace replaces",
+  "file": "rename.go",
+  "old": "\tif dstID != 0 && flags&RenameNoReplace != 0 {",
+  "new": "\tif false && dstID != 0 && flags&RenameNoReplace != 0 {",
+  "pkg": ".",
+  "run": "^TestRenameFlags$|^TestModelPosix$"
+ },
+ {
+  "name": "rename: the parent of a moved directory is not moved",
+  "file": "rename.go",
+  "old": "\tif src.IsDir() {\n\t\tsrc.Parent = newDir\n\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestRenameFlags$|^TestRenameDirectoryNever|^TestModelPosix$|^TestFailureAtEveryWrite$"
+ },
+ {
+  "name": "rename: the replaced inode keeps a name",
+  "file": "rename.go",
+  "old": "\t\tif err := v.drop(ctx, dst, now); err != nil {",
+  "new": "\t\tif err := error(nil); err != nil {",
+  "pkg": ".",
+  "run": "^TestRenameReplaces$|^TestRenameOverAHardLink|^TestModelPosix$"
+ },
+ {
+  "name": "rename: the directories keep their times",
+  "file": "rename.go",
+  "old": "\tod.Mtime, od.Ctime = now, now\n\tv.set(od)\n",
+  "new": "\tv.set(od)\n",
+  "pkg": ".",
+  "run": "^TestRenameTimes$"
+ },
+ {
+  "name": "rename: the new directory keeps its times",
+  "file": "rename.go",
+  "old": "\t\tnd.Mtime, nd.Ctime = now, now\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestRenameTimes$"
+ },
+ {
+  "name": "rename: an exchange does not put the other name back",
+  "file": "rename.go",
+  "old": "\t\tv.over.put(keyEntry(oldDir, oldName), encodeEntry(dstID, dst.Mode))\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestRenameFlags$|^TestModelPosix$"
+ },
+ {
+  "name": "rename: a directory can replace a file",
+  "file": "rename.go",
+  "old": "\tcase src.IsDir() && !dst.IsDir():",
+  "new": "\tcase false && src.IsDir() && !dst.IsDir():",
+  "pkg": ".",
+  "run": "^TestRenameReplaces$|^TestModelPosix$"
+ },
+ {
+  "name": "rename: the moved inode keeps its change time",
+  "file": "rename.go",
+  "old": "\tsrc.Ctime = now\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestRenameTimes$"
+ },
+ {
+  "name": "rename: a moved directory is not moved between its parents' counts",
+  "file": "rename.go",
+  "old": "\tif src.IsDir() {\n\t\tv.dirn.bump(oldDir, -1)\n\t\tv.dirn.bump(newDir, +1)\n\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestDirectoryLinkCounts$|^TestModelPosix$"
+ },
+ {
+  "name": "rename: a replaced directory is still counted",
+  "file": "rename.go",
+  "old": "\tif dst.IsDir() {\n\t\tv.dirn.bump(newDir, -1)\n",
+  "new": "\tif dst.IsDir() {\n",
+  "pkg": ".",
+  "run": "^TestDirectoryLinkCounts$|^TestModelPosix$"
+ },
+ {
+  "name": "rename: flags are not checked",
+  "file": "rename.go",
+  "old": "\tif flags&^(RenameNoReplace|RenameExchange) != 0 || flags == RenameNoReplace|RenameExchange {",
+  "new": "\tif false {",
+  "pkg": ".",
+  "run": "^TestRenameFlags$"
+ },
+ {
+  "name": "link: the count is not raised",
+  "file": "ops.go",
+  "old": "in.Nlink++; in.Ctime = now",
+  "new": "in.Ctime = now",
+  "pkg": ".",
+  "run": "^TestHardLinks$|^TestModelPosix$|^TestFailureAtEveryWrite$"
+ },
+ {
+  "name": "link: a directory can be linked",
+  "file": "ops.go",
+  "old": "\tcase in.IsDir():\n\t\treturn Inode{}, fmt.Errorf(\"%w: a directory has one name\", fs.ErrPermission)",
+  "new": "\tcase false:\n\t\treturn Inode{}, fmt.Errorf(\"%w: a directory has one name\", fs.ErrPermission)",
+  "pkg": ".",
+  "run": "^TestHardLinks$|^TestModelPosix$"
+ },
+ {
+  "name": "link: the Head does not announce links",
+  "file": "ops.go",
+  "old": "\tv.ns.links = true\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestHeadAnnouncesLinksOnlyAfterTheFirstLink$|^TestSpecLinksAndUsageFields$|^TestCheckFindsWhat"
+ },
+ {
+  "name": "link: linked inodes are not counted",
+  "file": "ops.go",
+  "old": "\tif in.Nlink == 2 {\n\t\tv.ns.linked++\n\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestHeadAnnouncesLinksOnlyAfterTheFirstLink$|^TestSpecLinksAndUsageFields$|^TestHardLinks$"
+ },
+ {
+  "name": "link: an unlinked inode can be linked",
+  "file": "ops.go",
+  "old": "\tif f := v.files[ino]; f != nil && f.orphan {\n\t\treturn Inode{}, fmt.Errorf(\"%w: inode %d was unlinked\", fs.ErrNotExist, ino)\n\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestUnlinkedFileWithAnotherNameStaysNamed$"
+ },
+ {
+  "name": "link: the directory keeps its times",
+  "file": "ops.go",
+  "old": "\tparent.Mtime, parent.Ctime = now, now\n\tv.put(parent)\n\treturn in, v.relieve(ctx)",
+  "new": "\tv.put(parent)\n\treturn in, v.relieve(ctx)",
+  "pkg": ".",
+  "run": "^TestDirectoryTimesFollowTheirEntries$"
+ },
+ {
+  "name": "link: the limit is not enforced",
+  "file": "ops.go",
+  "old": "\tcase in.Nlink >= maxLinks:",
+  "new": "\tcase false:",
+  "pkg": ".",
+  "run": "^TestHardLinks$|^TestLinkLimit"
+ },
+ {
+  "name": "remove: the name of a linked file takes the inode",
+  "file": "ops.go",
+  "old": "\tif in.Nlink > 1 {\n\t\tif _, err := v.update(",
+  "new": "\tif false {\n\t\tif _, err := v.update(",
+  "pkg": ".",
+  "run": "^TestHardLinks$|^TestRenameOverAHardLink|^TestModelPosix$"
+ },
+ {
+  "name": "remove: linked inodes are not uncounted",
+  "file": "ops.go",
+  "old": "\t\tif in.Nlink == 2 {\n\t\t\tv.ns.linked--\n\t\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestHeadAnnouncesLinksOnlyAfterTheFirstLink$|^TestCheckFindsWhat|^TestModelPosix$"
+ },
+ {
+  "name": "remove: an open file is deleted",
+  "file": "ops.go",
+  "old": "\t\tif f.refs > 0 {\n\t\t\tin.Nlink, in.Ctime = 0, now",
+  "new": "\t\tif false {\n\t\t\tin.Nlink, in.Ctime = 0, now",
+  "pkg": ".",
+  "run": "^TestRemovedFileStaysOpenForItsHandle$|^TestUnlinkedFile|^TestModelPosix$"
+ },
+ {
+  "name": "remove: a directory with entries is removed",
+  "file": "ops.go",
+  "old": "\t\tif kids {\n\t\t\treturn fmt.Errorf(\"%w: inode %d\", ErrNotEmpty, in.ID)\n\t\t}\n",
+  "new": "\t\tif kids && false {\n\t\t\treturn fmt.Errorf(\"%w: inode %d\", ErrNotEmpty, in.ID)\n\t\t}\n",
+  "pkg": ".",
+  "run": "^TestRenameReplaces$|^TestModelPosix$|^TestAnOperationThatFails"
+ },
+ {
+  "name": "remove: the directory keeps its times",
+  "file": "ops.go",
+  "old": "\tparent.Mtime, parent.Ctime = now, now\n\tv.over.del(keyEntry(dir, name))",
+  "new": "\tv.over.del(keyEntry(dir, name))",
+  "pkg": ".",
+  "run": "^TestDirectoryTimesFollowTheirEntries$"
+ },
+ {
+  "name": "remove: a removed directory is still counted in its parent",
+  "file": "ops.go",
+  "old": "\tif in.IsDir() {\n\t\tv.dirn.bump(dir, -1)\n\t}\n\treturn v.relieve(ctx)\n}\n\n// drop takes",
+  "new": "\treturn v.relieve(ctx)\n}\n\n// drop takes",
+  "pkg": ".",
+  "run": "^TestDirectoryLinkCounts$|^TestModelPosix$"
+ },
+ {
+  "name": "remove: bytes are not given back",
+  "file": "ops.go",
+  "old": "\tv.ns.bytes -= min(v.ns.bytes, held)\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestUsage$|^TestUnlinkedFileIsWholeForItsHandle$|^TestModelPosix$"
+ },
+ {
+  "name": "remove: the inode is not uncounted",
+  "file": "ops.go",
+  "old": "\tv.over.del(keyInode(in.ID))\n\tv.ns.files--\n\tv.ns.bytes",
+  "new": "\tv.over.del(keyInode(in.ID))\n\tv.ns.bytes",
+  "pkg": ".",
+  "run": "^TestUsage$|^TestUnlinkedFileIsWholeForItsHandle$|^TestModelPosix$"
+ },
+ {
+  "name": "make: the inode is not counted",
+  "file": "ops.go",
+  "old": "\tv.next++\n\tv.ns.files++\n",
+  "new": "\tv.next++\n",
+  "pkg": ".",
+  "run": "^TestUsage$|^TestSpecLinksAndUsageFields$|^TestModelPosix$"
+ },
+ {
+  "name": "make: the directory keeps its times",
+  "file": "ops.go",
+  "old": "\tparent.Mtime, parent.Ctime = now, now\n\tv.put(parent)\n\tif in.IsDir() {\n\t\tv.dirn.bump(dir, +1)",
+  "new": "\tv.put(parent)\n\tif in.IsDir() {\n\t\tv.dirn.bump(dir, +1)",
+  "pkg": ".",
+  "run": "^TestDirectoryTimesFollowTheirEntries$"
+ },
+ {
+  "name": "make: a new directory is not counted in its parent",
+  "file": "ops.go",
+  "old": "\tif in.IsDir() {\n\t\tv.dirn.bump(dir, +1)\n\t\tin.Nlink = 2\n",
+  "new": "\tif in.IsDir() {\n\t\tin.Nlink = 2\n",
+  "pkg": ".",
+  "run": "^TestDirectoryLinkCounts$|^TestModelPosix$"
+ },
+ {
+  "name": "make: a directory has no parent",
+  "file": "ops.go",
+  "old": "\tif in.IsDir() {\n\t\tin.Parent = dir\n\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestRenameDirectoryNever|^TestCheck|^TestModelPosix$|^TestFailureAtEveryWrite$"
+ },
+ {
+  "name": "make: a new directory in a setgid directory has no bit",
+  "file": "ops.go",
+  "old": "\t\tif mode.IsDir() {\n\t\t\tmode |= fs.ModeSetgid\n\t\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestOwnerAndGroupInheritance$"
+ },
+ {
+  "name": "make: the group is not inherited",
+  "file": "ops.go",
+  "old": "\t\tif c.owned && parent.Owned {\n\t\t\tc.gid = parent.GID\n\t\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestOwnerAndGroupInheritance$"
+ },
+ {
+  "name": "bits: the setuid bit is dropped",
+  "file": "ops.go",
+  "old": "func bits(m fs.FileMode) fs.FileMode { return m & (fs.ModePerm | special) }",
+  "new": "func bits(m fs.FileMode) fs.FileMode { return m & fs.ModePerm }",
+  "pkg": ".",
+  "run": "^TestSetAttr$|^TestOwnerAndGroupInheritance$|^TestModelPosix$"
+ },
+ {
+  "name": "symlink: the target is not stored",
+  "file": "ops.go",
+  "old": "\t\tv.over.put(keyInline(in.ID), target)\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestSymlinks$|^TestModelPosix$"
+ },
+ {
+  "name": "symlink: the size is not the target's",
+  "file": "ops.go",
+  "old": "\t\tin.Size = uint64(len(target))\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestSymlinks$|^TestModelPosix$"
+ },
+ {
+  "name": "symlink: an empty target is made",
+  "file": "ops.go",
+  "old": "\tcase target == \"\":",
+  "new": "\tcase false:",
+  "pkg": ".",
+  "run": "^TestSymlinks$"
+ },
+ {
+  "name": "symlink: a 4096 byte target is made",
+  "file": "ops.go",
+  "old": "\tcase len(target) > maxTarget:",
+  "new": "\tcase len(target) > maxTarget+1:",
+  "pkg": ".",
+  "run": "^TestSymlinks$"
+ },
+ {
+  "name": "symlink: a NUL in a target is made",
+  "file": "ops.go",
+  "old": "\tcase strings.ContainsRune(target, 0):",
+  "new": "\tcase false:",
+  "pkg": ".",
+  "run": "^TestSymlinks$"
+ },
+ {
+  "name": "mknod: a device is made",
+  "file": "ops.go",
+  "old": "\treturn Inode{}, fmt.Errorf(\"%w: a Volume holds no device nodes\", fs.ErrPermission)",
+  "new": "\treturn v.make(ctx, dir, name, mode&fs.ModeType|bits(mode), nil, opts)",
+  "pkg": ".",
+  "run": "^TestMknod$"
+ },
+ {
+  "name": "lookup: a name of 256 bytes is a name",
+  "file": "ops.go",
+  "old": "\tcase len(name) > maxName:",
+  "new": "\tcase false:",
+  "pkg": ".",
+  "run": "^TestNameLimits$"
+ },
+ {
+  "name": "readlink: a file has a target",
+  "file": "ops.go",
+  "old": "\tif in.Mode&fs.ModeSymlink == 0 {\n\t\treturn \"\", fmt.Errorf(\"%w: inode %d is not a symbolic link\", fs.ErrInvalid, ino)\n\t}\n",
+  "new": "\tif in.Mode&fs.ModeSymlink == 0 && false {\n\t\treturn \"\", fmt.Errorf(\"%w: inode %d is not a symbolic link\", fs.ErrInvalid, ino)\n\t}\n",
+  "pkg": ".",
+  "run": "^TestSymlinks$"
+ },
+ {
+  "name": "stat: an unlinked inode is read from the tree",
+  "file": "ops.go",
+  "old": "\tif f := v.files[ino]; f != nil && f.orphan {\n\t\tin := f.attr",
+  "new": "\tif f := v.files[ino]; f != nil && f.orphan && false {\n\t\tin := f.attr",
+  "pkg": ".",
+  "run": "^TestRemovedFileStaysOpenForItsHandle$|^TestUnlinkedFile|^TestModelPosix$"
+ },
+ {
+  "name": "set: a handle's times do not follow",
+  "file": "ops.go",
+  "old": "\t\tf.mtime, f.ctime = in.Mtime, in.Ctime\n\t\tif f.orphan {",
+  "new": "\t\tif f.orphan {",
+  "pkg": ".",
+  "run": "^TestWriteMovesMtimeAndCtime$"
+ },
+ {
+  "name": "setattr: the change time is not set",
+  "file": "attr.go",
+  "old": "\tin.Ctime = now\n\tif in.IsDir() { // read before anything is staged",
+  "new": "\t_ = now\n\tif in.IsDir() { // read before anything is staged",
+  "pkg": ".",
+  "run": "^TestSetAttr$"
+ },
+ {
+  "name": "setattr: the type bits change",
+  "file": "attr.go",
+  "old": "\t\tin.Mode = in.Mode&fs.ModeType | bits(*c.Mode)",
+  "new": "\t\tin.Mode = *c.Mode",
+  "pkg": ".",
+  "run": "^TestSetAttr$|^TestModelPosix$"
+ },
+ {
+  "name": "setattr: half an owner is made up",
+  "file": "attr.go",
+  "old": "\tif (c.UID != nil) != (c.GID != nil) && !in.Owned {",
+  "new": "\tif false {",
+  "pkg": ".",
+  "run": "^TestSetAttr$"
+ },
+ {
+  "name": "setattr: the owner is not set",
+  "file": "attr.go",
+  "old": "\t\tin.Owned = true\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestSetAttr$|^TestModelPosix$"
+ },
+ {
+  "name": "setattr: the access time is not set",
+  "file": "attr.go",
+  "old": "\tif c.Atime != nil {\n\t\tin.Atime = *c.Atime\n\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestSetAttr$|^TestModelPosix$"
+ },
+ {
+  "name": "setattr: a directory has a size",
+  "file": "attr.go",
+  "old": "\t\tcase in.IsDir():\n\t\t\treturn Inode{}, fmt.Errorf(\"%w: inode %d\", ErrIsDir, ino)\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestSetAttr$"
+ },
+ {
+  "name": "usage: the field is not written",
+  "file": "namespace.go",
+  "old": "\th.Tail = tailSet(h.Tail, tagUsage, w.b)\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestSpecLinksAndUsageFields$|^TestUsage$"
+ },
+ {
+  "name": "links: the bit is not written",
+  "file": "namespace.go",
+  "old": "\t\th.Needs |= needsLinks\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestHeadAnnouncesLinksOnlyAfterTheFirstLink$|^TestSpecLinksAndUsageFields$"
+ },
+ {
+  "name": "links: the field is not written",
+  "file": "namespace.go",
+  "old": "\t\th.Tail = tailSet(h.Tail, tagLinks, w.b)\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestHeadAnnouncesLinksOnlyAfterTheFirstLink$|^TestSpecLinksAndUsageFields$"
+ },
+ {
+  "name": "usage: it is not read back",
+  "file": "namespace.go",
+  "old": "\t\tc.files, c.bytes = r.uvarint(), r.uvarint()\n",
+  "new": "\t\tr.uvarint()\n\t\tr.uvarint()\n",
+  "pkg": ".",
+  "run": "^TestUsage$|^TestUsageFieldIsCheckedWhenRead$"
+ },
+ {
+  "name": "links: it is not read back",
+  "file": "namespace.go",
+  "old": "\t\tc.linked, c.links = r.uvarint(), true\n",
+  "new": "\t\tr.uvarint()\n\t\tc.links = true\n",
+  "pkg": ".",
+  "run": "^TestHeadAnnouncesLinksOnlyAfterTheFirstLink$"
+ },
+ {
+  "name": "usage: the field is not checked",
+  "file": "namespace.go",
+  "old": "\t\tif err := r.done(); err != nil {\n\t\t\treturn fmt.Errorf(\"%w: the Head's usage field\", err)\n\t\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestUsageFieldIsCheckedWhenRead$"
+ },
+ {
+  "name": "links: the field is not checked",
+  "file": "namespace.go",
+  "old": "\t\tif err := r.done(); err != nil {\n\t\t\treturn fmt.Errorf(\"%w: the Head's links field\", err)\n\t\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestLinksFieldIsHeldToItsBit$"
+ },
+ {
+  "name": "tail: a field is put out of order",
+  "file": "namespace.go",
+  "old": "\t\tcase t > tag && !done:",
+  "new": "\t\tcase false:",
+  "pkg": ".",
+  "run": "^TestTailSetKeepsEveryOtherFieldInOrder$|^TestTailThroughEveryDoor$"
+ },
+ {
+  "name": "tail: a field of the same tag is kept beside the new one",
+  "file": "namespace.go",
+  "old": "\t\tcase t == tag:\n\t\t\tput()\n\t\t\tdone = true\n",
+  "new": "\t\tcase t == tag && false:\n\t\t\tput()\n\t\t\tdone = true\n",
+  "pkg": ".",
+  "run": "^TestTailSetKeepsEveryOtherFieldInOrder$"
+ },
+ {
+  "name": "dirlinks: every entry is a subdirectory",
+  "file": "namespace.go",
+  "old": "\t\tif mode.IsDir() {\n\t\t\tn++\n\t\t}\n",
+  "new": "\t\t_ = mode\n\t\tn++\n",
+  "pkg": ".",
+  "run": "^TestDirectoryLinkCounts$|^TestModelPosix$"
+ },
+ {
+  "name": "head: the links bit is not known",
+  "file": "head.go",
+  "old": "const knownNeeds uint64 = needsLinks",
+  "new": "const knownNeeds uint64 = 0",
+  "pkg": ".",
+  "run": "^TestHeadAnnounces|^TestLinksFieldIsHeldToItsBit$|^TestHardLinks$"
+ },
+ {
+  "name": "usage: pending bytes are not counted for the capacity",
+  "file": "usage.go",
+  "old": "func (v *Volume) used() int64 { return int64(v.ns.bytes) + v.dirty }",
+  "new": "func (v *Volume) used() int64 { return int64(v.ns.bytes) }",
+  "pkg": ".",
+  "run": "^TestCapacity$"
+ },
+ {
+  "name": "record: a link count of one is accepted",
+  "file": "record.go",
+  "old": "\t\t\tif n < 2 { // one link is the absence of the field: it has one spelling",
+  "new": "\t\t\tif n < 1 { // one link is the absence of the field: it has one spelling",
+  "pkg": ".",
+  "run": "^TestSpecInodeAttributes$"
+ },
+ {
+  "name": "record: an owner without a group is accepted",
+  "file": "record.go",
+  "old": "\tcase owner != 0:\n\t\treturn in, fmt.Errorf(\"%w: inode record has an owner without a group, or the reverse\", ErrCorrupt)\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestSpecInodeAttributes$"
+ },
+ {
+  "name": "record: a link count on a directory is accepted",
+  "file": "record.go",
+  "old": "\tcase seen&(1<<fieldNlink) != 0 && in.IsDir():",
+  "new": "\tcase false:",
+  "pkg": ".",
+  "run": "^TestSpecInodeAttributes$"
+ },
+ {
+  "name": "record: a parent on a file is accepted",
+  "file": "record.go",
+  "old": "(!in.IsDir() || in.Parent == 0 || in.Parent == id)",
+  "new": "(in.Parent == 0 || in.Parent == id)",
+  "pkg": ".",
+  "run": "^TestSpecInodeAttributes$"
+ },
+ {
+  "name": "record: a directory that is its own parent is accepted",
+  "file": "record.go",
+  "old": "(!in.IsDir() || in.Parent == 0 || in.Parent == id)",
+  "new": "(!in.IsDir() || in.Parent == 0)",
+  "pkg": ".",
+  "run": "^TestSpecInodeAttributes$"
+ },
+ {
+  "name": "record: a parent is not written",
+  "file": "record.go",
+  "old": "\tif in.IsDir() && in.Parent != 0 {",
+  "new": "\tif false {",
+  "pkg": ".",
+  "run": "^TestSpecInodeAttributes$|^TestModelPosix$|^TestFailureAtEveryWrite$"
+ },
+ {
+  "name": "record: an owner is not written",
+  "file": "record.go",
+  "old": "\tif in.Owned {\n\t\tfield(fieldUID",
+  "new": "\tif false {\n\t\tfield(fieldUID",
+  "pkg": ".",
+  "run": "^TestSpecInodeAttributes$|^TestSetAttr$|^TestModelPosix$"
+ },
+ {
+  "name": "record: a link count is written for one name",
+  "file": "record.go",
+  "old": "\tif in.Nlink > 1 && !in.IsDir() {",
+  "new": "\tif in.Nlink > 0 && !in.IsDir() {",
+  "pkg": ".",
+  "run": "^TestSpecInodeAttributes$"
+ },
+ {
+  "name": "record: a link count is not written",
+  "file": "record.go",
+  "old": "\tif in.Nlink > 1 && !in.IsDir() {",
+  "new": "\tif false {",
+  "pkg": ".",
+  "run": "^TestSpecInodeAttributes$|^TestHardLinks$|^TestModelPosix$"
+ },
+ {
+  "name": "record: the group is read as the user",
+  "file": "record.go",
+  "old": "\t\tcase fieldGID:\n\t\t\tin.GID = v.uvarint32()",
+  "new": "\t\tcase fieldGID:\n\t\t\tin.GID = in.UID\n\t\t\tv.uvarint32()",
+  "pkg": ".",
+  "run": "^TestSpecInodeAttributes$|^TestSetAttr$"
+ },
+ {
+  "name": "open: a symbolic link can be opened",
+  "file": "file.go",
+  "old": "\tcase in.Mode&fs.ModeType != 0:\n\t\treturn nil, fmt.Errorf(\"%w: inode %d is not a regular file\", fs.ErrInvalid, ino)\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestSymlinks$|^TestMknod$"
+ },
+ {
+  "name": "open: an unlinked inode can be opened by number",
+  "file": "file.go",
+  "old": "\tif f.orphan {\n\t\treturn nil, fmt.Errorf(\"%w: inode %d was unlinked\", fs.ErrNotExist, ino)\n\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestRemovedFileStaysOpenForItsHandle$"
+ },
+ {
+  "name": "close: the last handle of an unlinked file keeps its bytes",
+  "file": "file.go",
+  "old": "\tif h.f.refs == 0 && (!h.f.changed || h.f.orphan) {",
+  "new": "\tif h.f.refs == 0 && !h.f.changed {",
+  "pkg": ".",
+  "run": "^TestRemovedFileStaysOpenForItsHandle$"
+ },
+ {
+  "name": "close: an unlinked file keeps its dirty bytes",
+  "file": "file.go",
+  "old": "\t\th.v.dirty -= h.f.dirtyN\n\t\tdelete(h.v.files, h.f.ino)",
+  "new": "\t\tdelete(h.v.files, h.f.ino)",
+  "pkg": ".",
+  "run": "^TestRemovedFileStaysOpenForItsHandle$"
+ },
+ {
+  "name": "settle: an unlinked file is written into the tree",
+  "file": "file.go",
+  "old": "\tif f.orphan {\n\t\t// Nothing of it is in the tree",
+  "new": "\tif f.orphan && false {\n\t\t// Nothing of it is in the tree",
+  "pkg": ".",
+  "run": "^TestUnlinkedFileIsWholeForItsHandle$|^TestRemovedFileStaysOpenForItsHandle$|^TestModelPosix$"
+ },
+ {
+  "name": "settle: bytes are not counted",
+  "file": "file.go",
+  "old": "\tv.ns.bytes = v.ns.bytes - min(v.ns.bytes, held) + now\n",
+  "new": "\t_, _ = held, now\n",
+  "pkg": ".",
+  "run": "^TestUsage$|^TestSpecLinksAndUsageFields$|^TestModelPosix$"
+ },
+ {
+  "name": "settle: the change time of a file is lost",
+  "file": "file.go",
+  "old": "\tin.Size, in.Mtime, in.Ctime = f.size, f.mtime, f.ctime\n",
+  "new": "\tin.Size, in.Mtime, in.Ctime = f.size, f.mtime, f.mtime\n",
+  "pkg": ".",
+  "run": "^TestWriteMovesMtimeAndCtime$|^TestSetAttr$"
+ },
+ {
+  "name": "write: the change time is not set",
+  "file": "file.go",
+  "old": "\tf.mtime, f.changed = v.Now(), true\n\tf.ctime = f.mtime\n\treturn len(p), v.relieve(ctx)",
+  "new": "\tf.mtime, f.changed = v.Now(), true\n\treturn len(p), v.relieve(ctx)",
+  "pkg": ".",
+  "run": "^TestWriteMovesMtimeAndCtime$"
+ },
+ {
+  "name": "truncate: the change time is not set",
+  "file": "file.go",
+  "old": "\tf.size, f.mtime, f.changed = size, v.Now(), true\n\tf.ctime = f.mtime\n",
+  "new": "\tf.size, f.mtime, f.changed = size, v.Now(), true\n",
+  "pkg": ".",
+  "run": "^TestWriteMovesMtimeAndCtime$"
+ },
+ {
+  "name": "punch: the change time is not set",
+  "file": "file.go",
+  "old": "\tf.mtime, f.changed = v.Now(), true\n\tf.ctime = f.mtime\n\treturn v.relieve(ctx)\n}",
+  "new": "\tf.mtime, f.changed = v.Now(), true\n\treturn v.relieve(ctx)\n}",
+  "pkg": ".",
+  "run": "^TestWriteMovesMtimeAndCtime$"
+ },
+ {
+  "name": "write: the capacity is not enforced",
+  "file": "file.go",
+  "old": "v.used()+int64(grow) > v.cfg.Capacity {",
+  "new": "v.used()+int64(grow) > v.cfg.Capacity*2 {",
+  "pkg": ".",
+  "run": "^TestCapacity$"
+ },
+ {
+  "name": "punch: the range is not voided",
+  "file": "file.go",
+  "old": "\tf.addVoid(a, b)\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestPunchedRangeCostsNothing$|^TestModelPosix$"
+ },
+ {
+  "name": "punch: written bytes in the range stay",
+  "file": "file.go",
+  "old": "\tf.dirty, f.dirtyN = kept, bytes\n",
+  "new": "\t_, _ = kept, bytes\n",
+  "pkg": ".",
+  "run": "^TestPunchedRangeCostsNothing$|^TestModelPosix$"
+ },
+ {
+  "name": "punch: the dirty accounting is not corrected",
+  "file": "file.go",
+  "old": "\tv.dirty += bytes - f.dirtyN\n\tf.dirty, f.dirtyN = kept, bytes",
+  "new": "\tf.dirty, f.dirtyN = kept, bytes",
+  "pkg": ".",
+  "run": "^TestPunchedRangeCostsNothing$|^TestModelPosix$"
+ },
+ {
+  "name": "read: punched bytes are not cleared",
+  "file": "file.go",
+  "old": "\t\tf.clearVoid(p[:lim-off], off)\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestPunchedRangeCostsNothing$|^TestModelPosix$"
+ },
+ {
+  "name": "runs: punched bytes are written again",
+  "file": "file.go",
+  "old": "\t\tfor _, r := range f.void {\n\t\t\tif r.b <= a {",
+  "new": "\t\tfor _, r := range f.void[:0] {\n\t\t\tif r.b <= a {",
+  "pkg": ".",
+  "run": "^TestPunchedRangeCostsNothing$|^TestModelPosix$"
+ },
+ {
+  "name": "recut: a chunk with a hole in it is kept",
+  "file": "file.go",
+  "old": "|| f.voided(e.off, e.end()) {",
+  "new": "{",
+  "pkg": ".",
+  "run": "^TestPunchedRangeCostsNothing$|^TestModelPosix$"
+ },
+ {
+  "name": "punch: a range past the end is not clipped",
+  "file": "file.go",
+  "old": "\ta, b := min(off, f.size), min(off+n, f.size)\n",
+  "new": "\ta, b := min(off, f.size), off+n\n",
+  "pkg": ".",
+  "run": "^TestPunchedRangeCostsNothing$"
+ },
+ {
+  "name": "punch: a range that wraps is empty",
+  "file": "file.go",
+  "old": "\tif off+n < off { // the range wraps: it reaches the end of the file\n\t\tb = f.size\n\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestPunchedRangeCostsNothing$"
+ },
+ {
+  "name": "addVoid: a range is kept apart from the one it overlaps",
+  "file": "file.go",
+  "old": "\t\tdefault:\n\t\t\ta, b = min(a, r.a), max(b, r.b)\n",
+  "new": "\t\tdefault:\n\t\t\tout = append(out, r)\n",
+  "pkg": ".",
+  "run": "^TestPunchedRangeCostsNothing$|^TestModelPosix$"
+ },
+ {
+  "name": "check: names are not counted",
+  "file": "check.go",
+  "old": "\t\tc.names++\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestCheckFindsWhatIsWrong$"
+ },
+ {
+  "name": "check: a link count is not compared",
+  "file": "check.go",
+  "old": "\t\tcase s.names != s.in.Nlink:",
+  "new": "\t\tcase false:",
+  "pkg": ".",
+  "run": "^TestCheckFindsWhatIsWrong$"
+ },
+ {
+  "name": "check: a parent is not compared",
+  "file": "check.go",
+  "old": "\t\t\tif s.names != 1 || s.in.Parent != s.dad {",
+  "new": "\t\t\tif s.names != 1 {",
+  "pkg": ".",
+  "run": "^TestCheckFindsWhatIsWrong$"
+ },
+ {
+  "name": "check: an entry of the wrong type is accepted",
+  "file": "check.go",
+  "old": "\t\tcase c.in.Mode&fs.ModeType != mode&fs.ModeType:",
+  "new": "\t\tcase false:",
+  "pkg": ".",
+  "run": "^TestCheckFindsWhatIsWrong$"
+ },
+ {
+  "name": "check: a dangling entry is accepted",
+  "file": "check.go",
+  "old": "\t\tcase c == nil:",
+  "new": "\t\tcase false:",
+  "pkg": ".",
+  "run": "^TestCheckFindsWhatIsWrong$"
+ },
+ {
+  "name": "check: data of no inode is accepted",
+  "file": "check.go",
+  "old": "\t\tif s == nil {\n\t\t\treturn fmt.Errorf(\"%w: data of inode %d, which does not exist\", ErrCorrupt, id)\n\t\t}\n",
+  "new": "\t\tif s == nil {\n\t\t\tcontinue\n\t\t}\n",
+  "pkg": ".",
+  "run": "^TestCheckFindsWhatIsWrong$"
+ },
+ {
+  "name": "check: the usage is not compared",
+  "file": "check.go",
+  "old": "\tcase v.ns.bytes != bytesHeld:",
+  "new": "\tcase false:",
+  "pkg": ".",
+  "run": "^TestCheckFindsWhatIsWrong$"
+ },
+ {
+  "name": "check: the linked count is not compared",
+  "file": "check.go",
+  "old": "\tcase v.ns.linked != linked:",
+  "new": "\tcase false:",
+  "pkg": ".",
+  "run": "^TestCheckFindsWhatIsWrong$"
+ },
+ {
+  "name": "mount: rename does nothing",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\treturn errno(n.s.vol.Rename(ctx, n.ino, req.OldName, nd.ino, req.NewName, 0))",
+  "new": "\t_ = nd\n\treturn nil",
+  "pkg": "./pkg/mount",
+  "run": "^TestRenameLinkSymlinkReadlink$|^TestFUSERename$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: a link is a new node",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\tif n := s.nodes[ino]; n != nil {\n\t\treturn n\n\t}\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestOneInodeIsOneNode$|^TestRenameLinkSymlinkReadlink$|^TestFUSELinks$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: a forgotten node is kept",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\tif n.s.nodes[n.ino] == n {\n\t\tdelete(n.s.nodes, n.ino)\n\t}\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestOneInodeIsOneNode$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: a stale Forget removes the next node",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\tif n.s.nodes[n.ino] == n {",
+  "new": "\tif true {",
+  "pkg": "./pkg/mount",
+  "run": "^TestOneInodeIsOneNode$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: the creator is root",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "func creator(h fuse.Header) vfs.Option { return vfs.Owner(h.Uid, h.Gid) }",
+  "new": "func creator(h fuse.Header) vfs.Option { return vfs.Owner(0, 0) }",
+  "pkg": "./pkg/mount",
+  "run": "^TestRenameLinkSymlinkReadlink$|^TestFUSEAttributes$|^TestSetattrIsTheVolumes$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: the kernel does not check permissions",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\t\tfuse.DefaultPermissions(),\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestFUSEAttributes$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: setattr drops the owner",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\t\tc.UID, c.GID = &uid, &gid\n",
+  "new": "\t\t_, _ = uid, gid\n",
+  "pkg": "./pkg/mount",
+  "run": "^TestSetattrIsTheVolumes$|^TestFUSEAttributes$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: setattr takes the group of the request for the user",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\t\tif req.Valid.Uid() {\n\t\t\tuid = req.Uid\n\t\t}\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestSetattrIsTheVolumes$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: setattr drops the times",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\tcase req.Valid.Mtime():\n\t\tc.Mtime = &req.Mtime\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestSetattrIsTheVolumes$|^TestFUSEAttributes$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: UTIME_NOW is not the time now",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\tcase req.Valid.MtimeNow():\n\t\tc.Mtime = &now\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestSetattrIsTheVolumes$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: setattr drops the size",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\tif req.Valid.Size() {\n\t\tc.Size = &req.Size\n\t}\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestSetattrIsTheVolumes$|^TestFUSEPOSIX$|^TestFUSEUnlinkWhileOpen$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: statfs reports nothing",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\t\tBlocks: u.blocks, Bfree: u.free, Bavail: u.free, Files: u.files, Ffree: u.ffree,\n",
+  "new": "\t\tBlocks: 0, Bfree: 0, Bavail: 0, Files: u.files, Ffree: u.ffree,\n",
+  "pkg": "./pkg/mount",
+  "run": "^TestStatfsOfAUsage$|^TestFUSEStatfs$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: statfs forgets what is pending",
+  "file": "pkg/mount/errno.go",
+  "old": "(u.Bytes+u.Pending+blockSize-1)/blockSize",
+  "new": "(u.Bytes+blockSize-1)/blockSize",
+  "pkg": "./pkg/mount",
+  "run": "^TestStatfsOfAUsage$|^TestFUSEStatfs$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: statfs without a capacity is empty",
+  "file": "pkg/mount/errno.go",
+  "old": "\tcapacity := uint64(vfs.MaxSize)\n",
+  "new": "\tcapacity := uint64(0)\n",
+  "pkg": "./pkg/mount",
+  "run": "^TestStatfsOfAUsage$|^TestFUSEStatfs$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: fallocate does not punch",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\tif punch || zero {\n\t\tif err := h.file.Punch",
+  "new": "\tif false {\n\t\tif err := h.file.Punch",
+  "pkg": "./pkg/mount",
+  "run": "^TestFUSEFallocate$|^TestFallocateModes$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: fallocate does not extend",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\t\t\treturn errno(h.file.Truncate(ctx, end))\n",
+  "new": "\t\t\treturn nil\n",
+  "pkg": "./pkg/mount",
+  "run": "^TestFUSEFallocate$|^TestFallocateModes$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: fallocate does everything",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\tif req.Mode&^(fuse.FAllocateKeepSize|fuse.FAllocatePunchHole|fallocZeroRange) != 0 || punch && zero || punch && !keep {\n\t\treturn syscall.EOPNOTSUPP\n\t}\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestFUSEFallocate$|^TestFallocateModes$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: a readdir entry is a file",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\tcase m&os.ModeSymlink != 0:\n\t\treturn fuse.DT_Link\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestRenameLinkSymlinkReadlink$|^TestFUSESpecialFiles$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: readdir types are lost for pipes",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\tcase m&os.ModeNamedPipe != 0:\n\t\treturn fuse.DT_FIFO\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestRenameLinkSymlinkReadlink$|^TestFUSESpecialFiles$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: dotdot is the directory itself",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "fuse.Dirent{Inode: uint64(up), Name: \"..\", Type: fuse.DT_Dir})",
+  "new": "fuse.Dirent{Inode: uint64(n.ino), Name: \"..\", Type: fuse.DT_Dir})\n\t_ = up",
+  "pkg": "./pkg/mount",
+  "run": "^TestFUSEReaddirDots$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: an inode with no owner belongs to root",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\treturn uint32(os.Getuid()), uint32(os.Getgid())\n}\n\n// creator",
+  "new": "\treturn 0, 0\n}\n\n// creator",
+  "pkg": "./pkg/mount",
+  "run": "^TestAttrOfAnInode$|^TestFUSEAttributes$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: a link count is always one",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\ta.Nlink = in.Nlink\n",
+  "new": "\ta.Nlink = 1\n",
+  "pkg": "./pkg/mount",
+  "run": "^TestAttrOfAnInode$|^TestFUSELinks$|^TestFUSEReaddirDots$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: a symbolic link target is read on a cancellable context",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "func (n *node) Readlink(ctx context.Context, _ *fuse.ReadlinkRequest) (string, error) {\n\tctx = context.WithoutCancel(ctx) // no request is answered EINTR: see errno.go\n",
+  "new": "func (n *node) Readlink(ctx context.Context, _ *fuse.ReadlinkRequest) (string, error) {\n",
+  "pkg": "./pkg/mount",
+  "run": "^TestEveryHandlerOutlivesItsRequest$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: link answers EXDEV for every node",
+  "file": "pkg/mount/fuse_unix.go",
+  "old": "\to, ok := old.(*node)\n\tif !ok {\n\t\treturn nil, syscall.EXDEV\n\t}\n",
+  "new": "\to, ok := old.(*node)\n\tif !ok || true {\n\t\treturn nil, syscall.EXDEV\n\t}\n",
+  "pkg": "./pkg/mount",
+  "run": "^TestRenameLinkSymlinkReadlink$|^TestFUSELinks$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: errors of a name too long are EINVAL",
+  "file": "pkg/mount/errno.go",
+  "old": "\tcase errors.Is(err, vfs.ErrNameTooLong):\n\t\treturn syscall.ENAMETOOLONG\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestErrnoMapping$|^TestFUSELinks$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: no space is an I/O error",
+  "file": "pkg/mount/errno.go",
+  "old": "\tcase errors.Is(err, vfs.ErrNoSpace):\n\t\treturn syscall.ENOSPC\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestErrnoMapping$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: too many links is an I/O error",
+  "file": "pkg/mount/errno.go",
+  "old": "\tcase errors.Is(err, vfs.ErrTooManyLinks):\n\t\treturn syscall.EMLINK\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestErrnoMapping$",
+  "tags": "fuse"
+ },
+ {
+  "name": "mount: a refused permission is an I/O error",
+  "file": "pkg/mount/errno.go",
+  "old": "\tcase errors.Is(err, fs.ErrPermission):\n\t\treturn syscall.EPERM\n",
+  "new": "",
+  "pkg": "./pkg/mount",
+  "run": "^TestErrnoMapping$|^TestFUSELinks$|^TestRenameLinkSymlinkReadlink$",
+  "tags": "fuse"
+ },
+ {
+  "name": "setattr: a time out of range is wrapped",
+  "file": "attr.go",
+  "old": "\t\tif t != nil && !time.Unix(0, t.UnixNano()).Equal(*t) {",
+  "new": "\t\tif t != nil && false {",
+  "pkg": ".",
+  "run": "^TestSetAttr$"
+ },
+ {
+  "name": "rename: an exchange does not give the old parent the other directory",
+  "file": "rename.go",
+  "old": "\t\tif flags&RenameExchange != 0 {\n\t\t\tv.dirn.bump(oldDir, +1)\n\t\t}\n",
+  "new": "",
+  "pkg": ".",
+  "run": "^TestRenameFlags$|^TestModelPosix$|^TestDirectoryLinkCounts$"
  }
 ]
