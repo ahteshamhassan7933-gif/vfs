@@ -137,7 +137,7 @@ func TestFsyncWaitsForItsCommit(t *testing.T) {
 	if _, err := f.WriteAt(bg, make([]byte, 200_000), 0); err != nil {
 		t.Fatal(err)
 	}
-	n := newSession(bg, v).node(in.ID, vfs.RootInode)
+	n := newSession(bg, v).node(in.ID)
 
 	g.armed.Store(true)
 	req, interrupt := context.WithCancel(bg)
@@ -407,7 +407,7 @@ func TestLookedUpFileReadsOnTheMountContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := newSession(bg, v2).node(vfs.RootInode, vfs.RootInode)
+	root := newSession(bg, v2).node(vfs.RootInode)
 	// What the kernel does for open("/f"): LOOKUP, OPEN, READ.
 	found, err := root.Lookup(bg, "f")
 	if err != nil {
