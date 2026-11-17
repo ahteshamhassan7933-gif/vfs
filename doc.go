@@ -47,9 +47,11 @@
 // advancing in the store: the conditional PUT of the Head has returned success.
 //
 //	call                                   durable when it returns
-//	File.WriteAt, Truncate, Create,        nothing. Held in memory; lost if the process dies.
-//	  Mkdir, Remove                          Past Config.Dirty bytes the data is chunked and
-//	                                         uploaded, still unreferenced, still not durable.
+//	File.WriteAt, Truncate, Punch, Create, nothing. Held in memory; lost if the process dies.
+//	  Mkdir, Remove, Rename, Link, Symlink,  Past Config.Dirty bytes the data is chunked and
+//	  Mknod, SetAttr                         uploaded, still unreferenced, still not durable.
+//	                                         Each is atomic in a commit: a Head holds all of
+//	                                         it or none.
 //	File.Close                             nothing. It releases the handle; it is not a flush.
 //	Volume.Flush                           everything written before the call, committed. It
 //	                                         returns only after the Head advanced.

@@ -61,7 +61,7 @@ func TestHeadFieldsSurviveACommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.head.Journal != 41 || r.head.Tail != tlv(40, "a field")+tlv(41, "of a later")+tlv(1<<40, "build") {
+	if r.head.Journal != 41 || dropUsage(r.head.Tail) != tlv(40, "a field")+tlv(41, "of a later")+tlv(1<<40, "build") {
 		t.Fatalf("after a commit the Head has Journal %d, Tail %q", r.head.Journal, r.head.Tail)
 	}
 }
@@ -100,4 +100,23 @@ func TestHeadOfALaterBuildIsRefusedByEveryDoor(t *testing.T) {
 	if !bytes.Equal(be.Dump()["head"], before) {
 		t.Error("a refused door changed the Head")
 	}
+}
+
+// dropUsage returns tail without the usage field, which every commit writes: what the test
+// put in is what a commit must carry unchanged beside it.
+func dropUsage(tail string) string {
+	var out string
+	r := reader{b: []byte(tail)}
+	for len(r.b) > 0 {
+		start := r.b
+		tag := r.uvarint()
+		r.bytes()
+		if r.err != nil {
+			return tail
+		}
+		if tag != tagUsage {
+			out += string(start[:len(start)-len(r.b)])
+		}
+	}
+	return out
 }

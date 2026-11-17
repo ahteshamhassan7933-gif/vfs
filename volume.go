@@ -41,6 +41,9 @@ type Config struct {
 	Round   uint64          // Attach, Reseal: the Round to claim; must exceed the recorded one, and be above 0
 	Verify  bool            // Reseal: read every shard the Head reaches and check every pack it needs is there, not only the root
 
+	Capacity int64            // bytes the Volume may hold: a write past it is refused with ErrNoSpace; 0 for no limit
+	Clock    func() time.Time // the time every change is stamped with; default time.Now
+
 	Cache   int64 // bytes of shards and chunks kept decoded; default 256 MiB
 	Dirty   int64 // bytes of unsettled writes (each separate write counts a fixed overhead too) before they are chunked and uploaded; default 64 MiB
 	Overlay int   // metadata changes held before they are written into shards; default 262144
@@ -96,6 +99,8 @@ type Volume struct {
 	dirty  int64
 	pack   pack
 	fenced bool
+	ns     counters // usage and links, written into every Head
+	dirn   dirCache // link counts of directories
 }
 
 func newVolume(cfg Config) *Volume {
@@ -176,6 +181,9 @@ func Open(ctx context.Context, cfg Config) (*Volume, error) {
 		return nil, err
 	}
 	v.adopt(h)
+	if err := v.ns.load(h); err != nil {
+		return nil, err
+	}
 	return v, nil
 }
 
@@ -215,6 +223,9 @@ func Attach(ctx context.Context, cfg Config) (*Volume, error) {
 		return nil, err
 	}
 	v.adopt(h)
+	if err := v.ns.load(h); err != nil {
+		return nil, err
+	}
 	v.round = cfg.Round
 	return v, nil
 }
@@ -362,6 +373,7 @@ func (v *Volume) Flush(ctx context.Context) error {
 	v.seq++
 	h := v.head
 	h.Seq, h.Root, h.Next = v.seq, v.root, uint64(v.next)
+	v.ns.stamp(&h)
 	if err := v.writeHead(ctx, h); err != nil {
 		if errors.Is(err, ErrStaleRound) {
 			v.fenced = true

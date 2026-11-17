@@ -34,8 +34,13 @@ const spanCost = 64
 // one fileState, so every handle sees every write at once.
 type fileState struct {
 	ino  InodeID
-	refs int  // open handles
-	gone bool // removed; handles fail
+	refs int // open handles
+
+	// orphan is a file that was unlinked while a handle held it: no name reaches it, the
+	// tree holds nothing of it, and it lives in memory (attr is its inode) until the last
+	// handle closes.
+	orphan bool
+	attr   Inode
 
 	// The settled content: inline bytes, or chunks sorted by offset. Chunks need
 	// not touch: where none covers a byte, the byte is a hole and reads as zero.
@@ -50,9 +55,15 @@ type fileState struct {
 	size    uint64
 	limit   uint64
 	mtime   time.Time
+	ctime   time.Time
 	changed bool
 	dirty   []span // sorted, disjoint, never touching
 	dirtyN  int64  // bytes plus spanCost per span
+
+	// void is the ranges of the settled content that were punched out: sorted, disjoint,
+	// never touching. They read as zero and cost nothing once settled. A write over one
+	// is a write: voids hide settled bytes, never written ones.
+	void []run
 }
 
 // span is a run of bytes written at an offset.
@@ -78,6 +89,9 @@ func (v *Volume) Open(ctx context.Context, ino InodeID) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
+	if f.orphan {
+		return nil, fmt.Errorf("%w: inode %d was unlinked", fs.ErrNotExist, ino)
+	}
 	f.refs++
 	return &File{v: v, f: f}, nil
 }
@@ -91,14 +105,17 @@ func (v *Volume) state(ctx context.Context, ino InodeID) (*fileState, error) {
 	if err != nil {
 		return nil, err
 	}
-	if in.IsDir() {
+	switch {
+	case in.IsDir():
 		return nil, fmt.Errorf("%w: inode %d", ErrIsDir, ino)
+	case in.Mode&fs.ModeType != 0:
+		return nil, fmt.Errorf("%w: inode %d is not a regular file", fs.ErrInvalid, ino)
 	}
 	recs, err := v.scan(ctx, key(tData, uint64(ino)))
 	if err != nil {
 		return nil, err
 	}
-	f := &fileState{ino: ino, base: in.Size, size: in.Size, limit: in.Size, mtime: in.Mtime}
+	f := &fileState{ino: ino, base: in.Size, size: in.Size, limit: in.Size, mtime: in.Mtime, ctime: in.Ctime}
 	for _, r := range recs {
 		if len(r.key) == prefixLen {
 			f.inline = r.val
@@ -118,9 +135,6 @@ func (v *Volume) state(ctx context.Context, ino InodeID) (*fileState, error) {
 func (h *File) Stat(ctx context.Context) (Inode, error) {
 	h.v.mu.RLock()
 	defer h.v.mu.RUnlock()
-	if h.f.gone {
-		return Inode{}, fs.ErrNotExist
-	}
 	return h.v.stat(ctx, h.f.ino)
 }
 
@@ -132,9 +146,6 @@ func (h *File) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	}
 	h.v.mu.RLock()
 	defer h.v.mu.RUnlock()
-	if h.f.gone {
-		return 0, fs.ErrNotExist
-	}
 	return h.v.read(ctx, h.f, p, uint64(off))
 }
 
@@ -150,6 +161,7 @@ func (v *Volume) read(ctx context.Context, f *fileState, p []byte, off uint64) (
 		if err := v.readBase(ctx, f, p[:lim-off], off); err != nil {
 			return 0, err
 		}
+		f.clearVoid(p[:lim-off], off)
 		clear(p[lim-off : n])
 	} else {
 		clear(p[:n])
@@ -216,13 +228,16 @@ func (h *File) WriteAt(ctx context.Context, p []byte, off int64) (int, error) {
 	if err := v.writable(); err != nil {
 		return 0, err
 	}
-	if h.f.gone {
-		return 0, fs.ErrNotExist
-	}
 	f := h.f
+	if end := uint64(off) + uint64(len(p)); v.cfg.Capacity > 0 && end > f.size {
+		if grow := end - max(uint64(off), f.size); v.used()+int64(grow) > v.cfg.Capacity {
+			return 0, fmt.Errorf("%w: capacity %d", ErrNoSpace, v.cfg.Capacity)
+		}
+	}
 	v.write(f, p, uint64(off))
 	f.size = max(f.size, uint64(off)+uint64(len(p)))
-	f.mtime, f.changed = time.Now(), true
+	f.mtime, f.changed = v.Now(), true
+	f.ctime = f.mtime
 	return len(p), v.relieve(ctx)
 }
 
@@ -274,9 +289,6 @@ func (h *File) Truncate(ctx context.Context, size uint64) error {
 	if err := h.v.writable(); err != nil {
 		return err
 	}
-	if h.f.gone {
-		return fs.ErrNotExist
-	}
 	h.v.truncate(h.f, size)
 	return h.v.relieve(ctx)
 }
@@ -317,15 +329,26 @@ func (v *Volume) truncate(f *fileState, size uint64) {
 		v.dirty += n - f.dirtyN
 		f.dirty, f.dirtyN = kept, n
 	}
-	f.size, f.mtime, f.changed = size, time.Now(), true
+	f.size, f.mtime, f.changed = size, v.Now(), true
+	f.ctime = f.mtime
+	for len(f.void) > 0 && f.void[len(f.void)-1].b > size {
+		last := &f.void[len(f.void)-1]
+		if last.a >= size {
+			f.void = f.void[:len(f.void)-1]
+		} else {
+			last.b = size
+		}
+	}
 }
 
-// Close releases the handle. It does not Flush.
+// Close releases the handle. It does not Flush. The last handle of a file that was
+// unlinked takes the file with it.
 func (h *File) Close() error {
 	h.v.mu.Lock()
 	defer h.v.mu.Unlock()
 	h.f.refs--
-	if h.f.refs == 0 && !h.f.changed {
+	if h.f.refs == 0 && (!h.f.changed || h.f.orphan) {
+		h.v.dirty -= h.f.dirtyN
 		delete(h.v.files, h.f.ino)
 	}
 	return nil
@@ -379,10 +402,33 @@ func (v *Volume) settle(ctx context.Context, f *fileState) error {
 		}
 	}
 
+	if f.orphan {
+		// Nothing of it is in the tree: its content settles into memory alone, which is
+		// what bounds the writes it holds.
+		f.inline, f.ext, f.base, f.limit, f.void = inline, out, f.size, f.size, nil
+		v.dirty -= f.dirtyN
+		f.dirty, f.dirtyN, f.changed = nil, 0, false
+		if f.size <= small {
+			f.ext = nil
+		} else {
+			f.inline = nil
+		}
+		return nil
+	}
 	in, err := v.stat(ctx, f.ino)
 	if err != nil {
 		return err
 	}
+
+	held := uint64(len(f.inline))
+	for _, e := range f.ext {
+		held += uint64(e.n)
+	}
+	now := uint64(len(inline))
+	for _, e := range out {
+		now += uint64(e.n)
+	}
+	v.ns.bytes = v.ns.bytes - min(v.ns.bytes, held) + now
 
 	// Diff against the settled records and queue only what differs.
 	if f.size <= small {
@@ -410,10 +456,10 @@ func (v *Volume) settle(ctx context.Context, f *fileState) error {
 			v.over.del(keyExtent(f.ino, off))
 		}
 	}
-	in.Size, in.Mtime, in.Ctime = f.size, f.mtime, f.mtime
+	in.Size, in.Mtime, in.Ctime = f.size, f.mtime, f.ctime
 	v.over.put(keyInode(f.ino), encodeInode(in))
 
-	f.inline, f.ext, f.base, f.limit = inline, out, f.size, f.size
+	f.inline, f.ext, f.base, f.limit, f.void = inline, out, f.size, f.size, nil
 	v.dirty -= f.dirtyN
 	f.dirty, f.dirtyN, f.changed = nil, 0, false
 	if f.size <= small {
@@ -438,14 +484,32 @@ func (f *fileState) runs() []run {
 			rs = append(rs, run{a, b})
 		}
 	}
+	// settled adds a stretch of the settled content: what was punched out is not in it.
+	settled := func(a, b uint64) {
+		for _, r := range f.void {
+			if r.b <= a {
+				continue
+			}
+			if r.a >= b {
+				break
+			}
+			if r.a > a {
+				add(a, r.a)
+			}
+			if a = max(a, r.b); a >= b {
+				return
+			}
+		}
+		add(a, b)
+	}
 	for _, e := range f.ext {
 		if e.off >= lim {
 			break
 		}
-		add(e.off, min(e.end(), lim))
+		settled(e.off, min(e.end(), lim))
 	}
 	if f.ext == nil {
-		add(0, min(uint64(len(f.inline)), lim))
+		settled(0, min(uint64(len(f.inline)), lim))
 	}
 	for _, s := range f.dirty {
 		add(s.off, s.end())
@@ -481,7 +545,7 @@ func (v *Volume) recut(ctx context.Context, f *fileState) ([]extent, error) {
 		// run still ends there.
 		clean := func() bool {
 			e := old[0]
-			if e.end() > min(f.size, f.limit) || f.touched(e.off, e.end()) {
+			if e.end() > min(f.size, f.limit) || f.touched(e.off, e.end()) || f.voided(e.off, e.end()) {
 				return false
 			}
 			endsRun := len(old) == 1 || old[1].off != e.end()
@@ -514,4 +578,85 @@ func (v *Volume) recut(ctx context.Context, f *fileState) ([]extent, error) {
 		}
 	}
 	return out, nil
+}
+
+// voided reports whether a punched range overlaps [a, b).
+func (f *fileState) voided(a, b uint64) bool {
+	i := sort.Search(len(f.void), func(i int) bool { return f.void[i].b > a })
+	return i < len(f.void) && f.void[i].a < b
+}
+
+// clearVoid zeroes the parts of p, the settled bytes at off, that were punched out.
+func (f *fileState) clearVoid(p []byte, off uint64) {
+	end := off + uint64(len(p))
+	for i := sort.Search(len(f.void), func(i int) bool { return f.void[i].b > off }); i < len(f.void) && f.void[i].a < end; i++ {
+		lo, hi := max(f.void[i].a, off), min(f.void[i].b, end)
+		clear(p[lo-off : hi-off])
+	}
+}
+
+// addVoid punches [a, b) out of the settled content.
+func (f *fileState) addVoid(a, b uint64) {
+	out := make([]run, 0, len(f.void)+1)
+	placed := false
+	for _, r := range f.void {
+		switch {
+		case r.b < a:
+			out = append(out, r)
+		case r.a > b:
+			if !placed {
+				out, placed = append(out, run{a, b}), true
+			}
+			out = append(out, r)
+		default:
+			a, b = min(a, r.a), max(b, r.b)
+		}
+	}
+	if !placed {
+		out = append(out, run{a, b})
+	}
+	f.void = out
+}
+
+// Punch deallocates [off, off+n) of the file: those bytes read as zero from now on, the
+// size is unchanged, and once settled the range costs no chunk, record or object. A range
+// past the end of the file is clipped to it.
+func (h *File) Punch(ctx context.Context, off, n uint64) error {
+	v, f := h.v, h.f
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if err := v.writable(); err != nil {
+		return err
+	}
+	a, b := min(off, f.size), min(off+n, f.size)
+	if off+n < off { // the range wraps: it reaches the end of the file
+		b = f.size
+	}
+	if a >= b {
+		return nil
+	}
+	var kept []span
+	var bytes int64
+	for _, s := range f.dirty {
+		switch {
+		case s.end() <= a || s.off >= b:
+			kept = append(kept, s)
+		default:
+			if s.off < a {
+				kept = append(kept, span{s.off, s.data[: a-s.off : a-s.off]})
+			}
+			if s.end() > b {
+				kept = append(kept, span{b, s.data[b-s.off:]})
+			}
+		}
+	}
+	for _, s := range kept {
+		bytes += int64(len(s.data)) + spanCost
+	}
+	v.dirty += bytes - f.dirtyN
+	f.dirty, f.dirtyN = kept, bytes
+	f.addVoid(a, b)
+	f.mtime, f.changed = v.Now(), true
+	f.ctime = f.mtime
+	return v.relieve(ctx)
 }
