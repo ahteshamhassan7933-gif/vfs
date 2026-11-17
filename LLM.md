@@ -53,7 +53,7 @@ edits, exactly what a cut of the file's final bytes gives
 ordered Merkle search tree (a prolly tree) of immutable shards:
 
 ```
-[1][ino]                 inode: tagged fields (mode, size, times; room for more)
+[1][ino]                 inode: tagged fields (mode, size, times; owner, group, link count, parent)
 [2][dir ino][name]       directory entry: child ino, type
 [3][ino]                 inline file bytes
 [3][ino][offset]         chunk reference: chunk id, length
@@ -62,8 +62,14 @@ ordered Merkle search tree (a prolly tree) of immutable shards:
 
 The inode record is a sequence of `[tag][length][value]` fields in ascending tag
 order. A reader checks the tags it knows, carries the ones it does not, and writes
-them back on rewrite, so owner, link count, device, symlink target and the like are
-new tags. New record kinds take the next `[table]` byte.
+them back on rewrite. Tags 1 to 5 are always there; 6 and 7 (owner and group, both or
+neither), 8 (link count of a non-directory, at least 2: the `links` bit of the Head announces
+it) and 9 (the parent of a directory) are there when they differ from what absence says. A
+symbolic link's target is its inline data record. A directory's link count is derived (2 and
+its subdirectories), cached in memory, never stored. New record kinds take the next `[table]` byte.
+The Head's Tail carries `links` (tag 2, under bit 2: the number of inodes with more than one
+name; set by the first hard link, never cleared) and `usage` (tag 64, no bit: inodes and bytes
+stored, kept by every commit; statfs reads it).
 
 Node boundaries are decided by the entries (a keyed hash of the key under a
 threshold proportional to the entry's size, the key derived from the Volume's seed),
@@ -127,14 +133,14 @@ the Head compare-and-swap is the only mutation of the tree.
   specification text, and by `pin_test.go` (key shapes, sizes, a fixture of the default
   Cipher). Change a byte and one fails; change the text and the test together.
 * The Head ends in `Journal` (the journal sequence it includes, 0 for none), `Needs`
-  (feature bits, 0 for none; none is defined) and the Tail: fields `[tag][length][value]`
+  (feature bits: 0, or bit 2 `links` once a hard link exists) and the Tail: fields `[tag][length][value]`
   with strictly increasing tags. A build refuses a Head with a bit it does not know
   (`ErrNeeds`), refuses one whose Tail is not whole, in order and at most 256 fields or that
   lacks the field of a bit it sets (`ErrCorrupt`), skips the fields it does not know and
   carries every one unchanged. `snapshots`, `links` and `base` are the reserved tags and bits
-  1 to 3 (SPECIFICATION 5.1), with no encoding: a bit is unusable until its encoding is in the
-  text, and no build sets one. A change that must be honoured by every writer or every
-  collector sets its bit and writes its field.
+  1 to 3 (SPECIFICATION 5.1); `links` (2) is defined and the others have no encoding: a bit is
+  unusable until its encoding is in the text, and no build sets one of those. A change that must
+  be honoured by every writer or every collector sets its bit and writes its field.
 * Integers are in their shortest form and a value wider than its field is refused, not
   truncated (SPECIFICATION 1): `reader.uvarint`, `uvarint32`, `varint`.
 * Objects beside the tree (a trace store, say) are extension objects (SPECIFICATION 3.1):
@@ -207,9 +213,15 @@ f, _ := v.Open(ctx, ino)             // *File: ReadAt, WriteAt, Truncate, Stat, 
 v.Truncate(ctx, ino, size); v.Flush(ctx); v.Stats(); v.Close()
 ```
 
-The API is by inode and name, as FUSE is, so rename, symlink, link, attributes and
-xattr add methods and record kinds without reshaping anything. Removing a file
-while it is open makes its handles fail (no orphan inodes yet).
+The API is by inode and name, as FUSE is. The namespace operations are `Rename(oldDir,
+oldName, newDir, newName, flags)` (atomic; no-replace and exchange), `Link`, `Symlink`,
+`Readlink`, `Mknod` (pipe, socket or regular), `SetAttr` (mode, owner and group, times, size),
+`File.Punch`, `Parent`, `Usage` and `Check` (the namespace's invariants: names, link counts,
+parents and the Head's counters). A creation takes `vfs.Owner(uid, gid)`; without it the inode has
+no owner record and belongs to whoever runs the mount. `Config.Clock` is the time of every
+change; `Config.Capacity` bounds the bytes (`ErrNoSpace`). An operation reads before it stages,
+so an error changes nothing. A file removed while a handle holds it stays whole for the handle
+(an orphan, in memory, never in a Head); the last close ends it.
 
 ## Layout
 
@@ -217,7 +229,10 @@ while it is open makes its handles fail (no orphan inodes yet).
 vfs/
 ├── doc.go                   # layout, commit, durability table, crash matrix, fence
 ├── volume.go head.go        # Create/Open/Attach/Flush; Head and sealing contexts
-├── ops.go file.go           # namespace operations; File, settle, recut, holes
+├── ops.go file.go           # names, links, symbolic links, removal; File, settle, recut, holes, orphans
+├── rename.go attr.go        # Rename and its flags; SetAttr
+├── namespace.go usage.go    # the Head's links and usage fields; directory link counts; Usage
+├── check.go                 # Check: the namespace's invariants
 ├── chunk.go pack.go         # FastCDC; packs, putChunk/getChunk
 ├── record.go tree.go shard.go overlay.go codec.go lru.go   # metadata tree
 ├── cipher.go                # Cipher, Provider, Hybrid, the configuration check
@@ -259,6 +274,8 @@ go test ./...                                    # fast + scale tests
 go test -short -race ./...                       # the race detector over the lot (CI runs it on the tests with goroutines)
 go test -tags fuse ./pkg/mount                   # needs /dev/fuse + fusermount3
 tools/ci/mount.sh ./pkg/mount run '^TestFUSEPOSIX$'   # the same with no helper and no privilege, in a user namespace
+tools/ci/gitwork.sh DIR ORIGIN                   # git's work on DIR: the same hashes on a mount and on tmpfs
+tools/ci/treehash.sh DIR FACTS                   # every fact about a tree, and one hash (an npm ci on both)
 PATH=$DIR:$PATH go test ./...                    # $DIR holds the `s3` server (tools/ci/s3server.sh DIR fetches the published image)
 go run ./tools/mutate                            # every mutation must be killed by a test
 ```
@@ -285,9 +302,9 @@ answer, and without root the threads stay in D state until reboot.
 
 ## Not yet built (plain statement of fact)
 
-* POSIX operations beyond Lookup, ReadDir, Mkdir, Create, Remove, Truncate, Read,
-  Write, Flush, Fsync: rename, symlink, hard link, chmod/chown/utimens, statfs,
-  xattr, locks, unlink-while-open. The mount answers the missing ones ENOSYS.
+* Extended attributes, device nodes, `O_TMPFILE`, the flags of `renameat2` on a mount
+  (the FUSE library has no request for them: SPECIFICATION 11.2), and the sticky bit in
+  `stat` (the library leaves it out of its answer).
 * The node cache and journal (Fsync costs a commit), group commit, parallel
   uploads, read-ahead, partial-chunk reads.
 * A server and agent process around the Volume.
